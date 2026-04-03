@@ -140,9 +140,30 @@ STATS_RESET_CRON=0 * * * *
 
 ```bash
 npm install
-pm2 start scheduler/campaignScheduler.js --name ai-outreach-agent
+pm2 delete ai-outreach-api ai-outreach-agent
+pm2 start ecosystem.config.cjs
 pm2 save
 pm2 startup
+```
+
+This ecosystem file starts:
+
+- `ai-outreach-api` on port `6000`
+- `ai-outreach-agent` for the scheduler
+
+Useful PM2 commands:
+
+```bash
+pm2 list
+pm2 logs ai-outreach-api --lines 100
+pm2 logs ai-outreach-agent --lines 100
+pm2 restart ecosystem.config.cjs
+```
+
+Manual trigger with PM2:
+
+```bash
+curl -X POST http://127.0.0.1:6000/api/campaign/run
 ```
 
 ## Amazon EC2 Ubuntu Setup
@@ -157,7 +178,7 @@ git clone <your-repo-url> ai-outreach-agent
 cd ai-outreach-agent
 npm install
 cp .env.example .env
-pm2 start scheduler/campaignScheduler.js --name ai-outreach-agent
+pm2 start ecosystem.config.cjs
 pm2 save
 pm2 startup
 ```
