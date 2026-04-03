@@ -1,0 +1,34 @@
+{
+  "name": "ai-outreach-agent",
+  "version": "1.0.0",
+  "description": "Production-ready outreach automation for discovering SMB leads, analyzing websites, generating emails, and sending safe campaigns.",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "scheduler": "node scheduler/campaignScheduler.js",
+    "dev": "node --watch server.js",
+    "lint:imports": "node -e \"import('./server.js').then(()=>console.log('imports ok'))\""
+  },
+  "keywords": [
+    "outreach",
+    "automation",
+    "mongodb",
+    "puppeteer",
+    "lighthouse",
+    "nodemailer"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^17.2.2",
+    "lighthouse": "^12.8.2",
+    "mongodb": "^6.19.0",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.6",
+    "puppeteer": "^24.19.0"
+  }
+}
