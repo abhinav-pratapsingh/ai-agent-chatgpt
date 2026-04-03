@@ -1,5 +1,5 @@
 import nodemailer from "nodemailer";
-import { getCountryTimezone } from "../config/countryConfig.js";
+import { inferTimezone } from "../config/countryConfig.js";
 import { getSmtpDelayWindow, getSmtpProviderConfig, getSmtpProviderName } from "../config/smtpConfig.js";
 import { findLeads, incrementEmailStats, resetEmailStatsIfNeeded, updateLead } from "../database/mongo.js";
 import { randomDelay } from "../utils/delay.js";
@@ -45,6 +45,14 @@ const getEligibleLeadBatch = async () => {
   });
 };
 
+const buildTimezone = (lead) => {
+  return lead.timezone ?? inferTimezone(lead.country, lead.city);
+};
+
+const buildSenderAddress = () => {
+  return `"${process.env.MAIL_FROM_NAME ?? "AI Outreach Agent"}" <${process.env.MAIL_FROM_EMAIL ?? process.env.GMAIL_USER}>`;
+};
+
 const sendOutreachEmails = async () => {
   const transporter = createTransporter();
   const providerName = getSmtpProviderName();
@@ -54,7 +62,7 @@ const sendOutreachEmails = async () => {
   logger.info("mode selected", { providerName });
 
   for (const lead of leads) {
-    const timezone = lead.timezone ?? getCountryTimezone(lead.country);
+    const timezone = buildTimezone(lead);
 
     if (!isWithinBusinessHours(timezone)) {
       logger.info("skipping lead outside send window", { businessName: lead.name, timezone });
@@ -66,7 +74,7 @@ const sendOutreachEmails = async () => {
       break;
     }
 
-    const subject = getSubjectLine(lead._id?.toString()?.length ?? Date.now());
+    const subject = getSubjectLine(lead);
     const emailBody = await generateEmailBody(lead);
     const recipient = process.env.TEST_MODE === "true" ? process.env.TEST_RECIPIENT : lead.email;
 
@@ -76,7 +84,7 @@ const sendOutreachEmails = async () => {
     }
 
     await transporter.sendMail({
-      from: `"${process.env.MAIL_FROM_NAME ?? "AI Outreach Agent"}" <${process.env.MAIL_FROM_EMAIL ?? process.env.GMAIL_USER}>`,
+      from: buildSenderAddress(),
       to: recipient,
       replyTo: process.env.REPLY_TO_EMAIL || process.env.MAIL_FROM_EMAIL || process.env.GMAIL_USER,
       subject,
@@ -92,13 +100,14 @@ const sendOutreachEmails = async () => {
           emailBody,
           subjectLine: subject,
           nextFollowupAt: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+          timezone,
           updatedAt: new Date()
         }
       }
     );
 
     await incrementEmailStats(providerName);
-    logger.info("email sent", { businessName: lead.name, recipient, providerName });
+    logger.info("email sent", { businessName: lead.name, recipient, providerName, timezone });
     await randomDelay(minMs, maxMs);
   }
 };
@@ -118,7 +127,7 @@ const sendFollowupEmails = async () => {
   });
 
   for (const lead of leads) {
-    const timezone = lead.timezone ?? getCountryTimezone(lead.country);
+    const timezone = buildTimezone(lead);
 
     if (!isWithinBusinessHours(timezone)) {
       continue;
@@ -137,10 +146,10 @@ const sendFollowupEmails = async () => {
     }
 
     await transporter.sendMail({
-      from: `"${process.env.MAIL_FROM_NAME ?? "AI Outreach Agent"}" <${process.env.MAIL_FROM_EMAIL ?? process.env.GMAIL_USER}>`,
+      from: buildSenderAddress(),
       to: recipient,
       replyTo: process.env.REPLY_TO_EMAIL || process.env.MAIL_FROM_EMAIL || process.env.GMAIL_USER,
-      subject: `Following up: ${lead.subjectLine ?? getSubjectLine(Date.now())}`,
+      subject: `Following up: ${lead.subjectLine ?? getSubjectLine(lead, `followup-${new Date().toISOString().slice(0, 10)}`)}`,
       text: followupBody
     });
 
@@ -150,15 +159,16 @@ const sendFollowupEmails = async () => {
         $set: {
           followupSent: true,
           followupBody,
+          timezone,
           updatedAt: new Date()
         }
       }
     );
 
     await incrementEmailStats(providerName);
-    logger.info("follow-up email sent", { businessName: lead.name, recipient, providerName });
+    logger.info("follow-up email sent", { businessName: lead.name, recipient, providerName, timezone });
     await randomDelay(minMs, maxMs);
   }
 };
 
-export { canSendMoreEmails, createTransporter, sendFollowupEmails, sendOutreachEmails };
+export { buildSenderAddress, canSendMoreEmails, createTransporter, sendFollowupEmails, sendOutreachEmails };

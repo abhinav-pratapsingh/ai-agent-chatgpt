@@ -38,7 +38,9 @@ const ensureCollections = async () => {
 
   await Promise.all([
     leads.createIndex({ website: 1 }, { unique: true, sparse: true }),
-    leads.createIndex({ name: 1, city: 1, country: 1, industry: 1 }, { unique: true }),
+    leads.createIndex({ mapsUrl: 1 }, { unique: true, sparse: true }),
+    leads.createIndex({ placeId: 1 }, { unique: true, sparse: true }),
+    leads.createIndex({ name: 1, city: 1, country: 1, industry: 1 }),
     leads.createIndex({ contacted: 1, followupSent: 1, score: -1 }),
     leads.createIndex({ nextFollowupAt: 1 }),
     emailStats.createIndex({ provider: 1 }, { unique: true })
@@ -62,12 +64,16 @@ const upsertLead = async (lead) => {
   const leads = await getLeadsCollection();
   const identityFilter = lead.website
     ? { website: lead.website }
-    : {
-        name: lead.name,
-        city: lead.city,
-        country: lead.country,
-        industry: lead.industry
-      };
+    : lead.mapsUrl
+      ? { mapsUrl: lead.mapsUrl }
+      : lead.placeId
+        ? { placeId: lead.placeId }
+        : {
+            name: lead.name,
+            city: lead.city,
+            country: lead.country,
+            industry: lead.industry
+          };
 
   await leads.updateOne(
     identityFilter,
@@ -75,6 +81,9 @@ const upsertLead = async (lead) => {
       $set: {
         name: lead.name,
         website: lead.website ?? null,
+        mapsUrl: lead.mapsUrl ?? null,
+        placeId: lead.placeId ?? null,
+        sourceText: lead.sourceText ?? null,
         hasWebsite: Boolean(lead.hasWebsite),
         email: lead.email ?? null,
         industry: lead.industry,

@@ -6,9 +6,22 @@ const subjectLines = [
   "Performance improvement suggestion"
 ];
 
-const getSubjectLine = (seedValue = Date.now()) => {
-  const normalizedSeed = Math.abs(Number(seedValue) || 0);
-  return subjectLines[normalizedSeed % subjectLines.length];
+const hashString = (value) => {
+  return Array.from(String(value ?? "")).reduce((total, character) => {
+    return (total * 31 + character.charCodeAt(0)) >>> 0;
+  }, 7);
 };
 
-export { getSubjectLine, subjectLines };
+const getSubjectLine = (lead = {}, variantSeed = new Date().toISOString().slice(0, 10)) => {
+  const compositeSeed = [
+    lead._id?.toString?.() ?? "",
+    lead.name ?? "",
+    lead.email ?? "",
+    lead.city ?? "",
+    variantSeed
+  ].join("|");
+
+  return subjectLines[hashString(compositeSeed) % subjectLines.length];
+};
+
+export { getSubjectLine, hashString, subjectLines };

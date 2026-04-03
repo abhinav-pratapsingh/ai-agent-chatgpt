@@ -107,7 +107,13 @@ node server.js
 Trigger the full campaign immediately from the same server:
 
 ```bash
-curl -X POST http://127.0.0.1:6000/api/campaign/run
+curl -X POST http://127.0.0.1:6080/api/campaign/run
+```
+
+Check whether the API is up and whether a campaign is currently running:
+
+```bash
+curl http://127.0.0.1:6080/api/campaign/status
 ```
 
 This manual trigger runs the full flow:
@@ -148,7 +154,7 @@ pm2 startup
 
 This ecosystem file starts:
 
-- `ai-outreach-api` on port `6000`
+- `ai-outreach-api` on port `6080`
 - `ai-outreach-agent` for the scheduler
 
 Useful PM2 commands:
@@ -163,7 +169,8 @@ pm2 restart ecosystem.config.cjs
 Manual trigger with PM2:
 
 ```bash
-curl -X POST http://127.0.0.1:6000/api/campaign/run
+curl -X POST http://127.0.0.1:6080/api/campaign/run
+curl http://127.0.0.1:6080/api/campaign/status
 ```
 
 ## Amazon EC2 Ubuntu Setup

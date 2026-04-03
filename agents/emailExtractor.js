@@ -14,12 +14,50 @@ const createCandidateUrls = (website) => {
   }
 
   const normalizedWebsite = website.endsWith("/") ? website.slice(0, -1) : website;
-  return [normalizedWebsite, `${normalizedWebsite}/contact`, `${normalizedWebsite}/about`];
+  return [normalizedWebsite, `${normalizedWebsite}/contact`, `${normalizedWebsite}/about`, `${normalizedWebsite}/contact-us`];
+};
+
+const extractEmailsFromPage = async (page, url) => {
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+  const text = await page.evaluate(() => {
+    const mailtoLinks = Array.from(document.querySelectorAll('a[href^="mailto:"]')).map((link) => link.getAttribute("href")?.replace(/^mailto:/i, "") ?? "");
+    return `${document.body?.innerText ?? ""}\n${mailtoLinks.join("\n")}`;
+  });
+  return extractEmailsFromText(text);
+};
+
+const buildSearchQueries = (lead) => {
+  return [
+    `site:facebook.com \"${lead.name}\" \"${lead.city}\" email`,
+    `\"${lead.name}\" \"${lead.city}\" \"${lead.country}\" email`,
+    `\"${lead.name}\" contact email \"${lead.city}\"`
+  ];
+};
+
+const searchForBusinessEmail = async (page, lead) => {
+  for (const query of buildSearchQueries(lead)) {
+    try {
+      await page.goto(`https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+        waitUntil: "domcontentloaded",
+        timeout: 45000
+      });
+
+      const text = await page.evaluate(() => document.body?.innerText ?? "");
+      const emails = extractEmailsFromText(text).filter((email) => !email.endsWith("@example.com"));
+
+      if (emails.length > 0) {
+        return emails[0];
+      }
+    } catch (error) {
+      logger.debug("search-based email extraction failed", { businessName: lead.name, query, error: error.message });
+    }
+  }
+
+  return null;
 };
 
 const extractEmails = async () => {
   const leads = await findLeads({
-    hasWebsite: true,
     email: { $in: [null, ""] }
   });
 
@@ -43,9 +81,7 @@ const extractEmails = async () => {
 
       for (const url of createCandidateUrls(lead.website)) {
         try {
-          await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
-          const text = await page.evaluate(() => document.body?.innerText ?? "");
-          const emails = extractEmailsFromText(text);
+          const emails = await extractEmailsFromPage(page, url);
 
           if (emails.length > 0) {
             [discoveredEmail] = emails;
@@ -54,6 +90,10 @@ const extractEmails = async () => {
         } catch (error) {
           logger.debug("email extraction page failed", { url, error: error.message });
         }
+      }
+
+      if (!discoveredEmail) {
+        discoveredEmail = await searchForBusinessEmail(page, lead);
       }
 
       await page.close();
@@ -76,4 +116,4 @@ const extractEmails = async () => {
   }
 };
 
-export { createCandidateUrls, extractEmails, extractEmailsFromText };
+export { createCandidateUrls, extractEmails, extractEmailsFromText, searchForBusinessEmail };

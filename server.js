@@ -1,11 +1,11 @@
-import "dotenv/config";
+import "./config/loadEnv.js";
 import http from "node:http";
-import { runCampaignCycle } from "./scheduler/campaignScheduler.js";
+import { getCampaignState, runCampaignCycle } from "./scheduler/campaignScheduler.js";
 import { getRotatedCountry } from "./config/countryConfig.js";
 import { getOutreachMode } from "./config/outreachModeConfig.js";
-import { getSmtpProviderName } from "./config/smtpConfig.js";
+import { getSmtpProviderConfig, getSmtpProviderName } from "./config/smtpConfig.js";
 import { getTierMetadata } from "./config/tierConfig.js";
-import { connectToMongo } from "./database/mongo.js";
+import { connectToMongo, getEmailStats } from "./database/mongo.js";
 import { logger } from "./utils/logger.js";
 
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
@@ -22,12 +22,56 @@ const sendJson = (response, statusCode, payload) => {
   response.end(JSON.stringify(payload));
 };
 
+const buildStatusPayload = async () => {
+  const tier = getTierMetadata();
+  const country = getRotatedCountry();
+  const campaignState = getCampaignState();
+  const smtpProvider = getSmtpProviderConfig();
+
+  let emailStats = {
+    emailsSentToday: 0,
+    emailsSentThisHour: 0
+  };
+
+  try {
+    await connectToMongo();
+    emailStats = await getEmailStats(smtpProvider.name);
+  } catch (error) {
+    logger.warn("status endpoint using degraded mongo-free response", { error: error.message });
+  }
+
+  return {
+    status: campaignState.isCampaignRunning ? "running" : "idle",
+    timestamp: new Date().toISOString(),
+    config: {
+      tier: `${tier.tierId} - ${tier.name}`,
+      country: country.name,
+      mode: getOutreachMode(),
+      smtp: getSmtpProviderName()
+    },
+    emailsToday: emailStats.emailsSentToday,
+    dailyLimit: smtpProvider.dailyLimit,
+    emailsThisHour: emailStats.emailsSentThisHour,
+    hourlyLimit: smtpProvider.hourlyLimit
+  };
+};
+
 const requestHandler = async (request, response) => {
   if (request.method === "POST" && request.url === "/api/campaign/run") {
     if (!isLocalRequest(request)) {
       sendJson(response, 403, {
         status: "forbidden",
         message: "Manual campaign trigger is only available from localhost."
+      });
+      return;
+    }
+
+    const campaignState = getCampaignState();
+
+    if (campaignState.isCampaignRunning) {
+      sendJson(response, 409, {
+        status: "busy",
+        message: "Campaign cycle is already running."
       });
       return;
     }
@@ -47,6 +91,11 @@ const requestHandler = async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && request.url === "/api/campaign/status") {
+    sendJson(response, 200, await buildStatusPayload());
+    return;
+  }
+
   const tier = getTierMetadata();
   const country = getRotatedCountry();
 
@@ -62,21 +111,24 @@ const requestHandler = async (request, response) => {
 };
 
 const startServer = async () => {
-  await connectToMongo();
-
   const server = http.createServer((request, response) => {
     requestHandler(request, response).catch((error) => {
-      logger.error("request failed", { error: error.message });
-      response.writeHead(500, {
-        "Content-Type": "application/json"
-      });
-      response.end(JSON.stringify({ status: "error" }));
+      logger.error("request failed", { error: error.message, stack: error.stack });
+      sendJson(response, 500, { status: "error" });
     });
   });
 
   server.listen(port, () => {
     logger.info("server started", { port });
   });
+
+  connectToMongo()
+    .then(() => {
+      logger.info("mongo connection ready for api server");
+    })
+    .catch((error) => {
+      logger.error("api server mongo startup failed", { error: error.message, stack: error.stack });
+    });
 };
 
 if (process.argv[1] && process.argv[1].endsWith("server.js")) {
@@ -86,4 +138,5 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
   });
 }
 
-export { requestHandler, startServer };
+export { buildStatusPayload, requestHandler, startServer };
+

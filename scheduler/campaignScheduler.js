@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "../config/loadEnv.js";
 import cron from "node-cron";
 import { collectLeads } from "../agents/leadCollector.js";
 import { extractEmails } from "../agents/emailExtractor.js";
@@ -18,7 +18,7 @@ const STATS_RESET_CRON = process.env.STATS_RESET_CRON ?? "0 * * * *";
 const runCampaignCycle = async () => {
   if (isCampaignRunning) {
     logger.warn("campaign cycle skipped", { reason: "already running" });
-    return;
+    return false;
   }
 
   isCampaignRunning = true;
@@ -39,8 +39,10 @@ const runCampaignCycle = async () => {
     await scoreLeads();
     await sendOutreachEmails();
     await sendFollowupEmails();
+    return true;
   } catch (error) {
     logger.error("campaign cycle failed", { error: error.message, stack: error.stack });
+    return false;
   } finally {
     isCampaignRunning = false;
   }
@@ -64,6 +66,14 @@ const startScheduler = async () => {
   await runCampaignCycle();
 };
 
+const getCampaignState = () => {
+  return {
+    isCampaignRunning,
+    campaignPollCron: CAMPAIGN_POLL_CRON,
+    statsResetCron: STATS_RESET_CRON
+  };
+};
+
 process.on("SIGINT", async () => {
   await closeMongoConnection();
   process.exit(0);
@@ -81,4 +91,5 @@ if (process.argv[1] && process.argv[1].endsWith("campaignScheduler.js")) {
   });
 }
 
-export { runCampaignCycle, startScheduler };
+export { getCampaignState, runCampaignCycle, startScheduler };
+
