@@ -5,6 +5,18 @@ import { upsertLead } from "../database/mongo.js";
 import { delay } from "../utils/delay.js";
 import { logger } from "../utils/logger.js";
 
+const consentPhrases = [
+  "accept all",
+  "i agree",
+  "agree",
+  "accept",
+  "godkänn alla",
+  "jag godkänner",
+  "acceptera",
+  "tillåt alla",
+  "allow all"
+];
+
 const openBrowser = async () => {
   return puppeteer.launch({
     headless: process.env.PUPPETEER_HEADLESS !== "false",
@@ -13,7 +25,7 @@ const openBrowser = async () => {
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-blink-features=AutomationControlled",
-      "--lang=en-US,en"
+      "--lang=en-US,en-GB,en"
     ]
   });
 };
@@ -35,45 +47,85 @@ const sanitizeCity = (city, countryName) => {
   return normalizedCity || countryName;
 };
 
+const looksLikeConsentText = (text) => {
+  const normalizedText = String(text ?? "").trim().toLowerCase();
+  return consentPhrases.some((phrase) => normalizedText.includes(phrase));
+};
+
+const preloadGoogleContext = async (page) => {
+  await page.setExtraHTTPHeaders({
+    "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8"
+  });
+
+  await page.goto("https://www.google.com/ncr", {
+    waitUntil: "domcontentloaded",
+    timeout: 60000
+  });
+
+  await page.setCookie({
+    name: "SOCS",
+    value: "CAESHAgBEhIaAB",
+    domain: ".google.com",
+    path: "/",
+    secure: true,
+    httpOnly: false,
+    sameSite: "None"
+  });
+};
+
 const acceptConsentIfPresent = async (page) => {
-  const consentSelectors = [
-    'button[aria-label*="Accept"]',
-    'button[aria-label*="accept"]',
-    'button[aria-label*="Agree"]',
-    'button[aria-label*="I agree"]',
-    'form button',
-    'button'
-  ];
+  const clicked = await page.evaluate((phrases) => {
+    const isMatch = (value) => {
+      const normalizedValue = String(value ?? "").trim().toLowerCase();
+      return phrases.some((phrase) => normalizedValue.includes(phrase));
+    };
 
-  for (const selector of consentSelectors) {
-    try {
-      const clicked = await page.evaluate((currentSelector) => {
-        const buttons = Array.from(document.querySelectorAll(currentSelector));
-        const target = buttons.find((button) => {
-          const text = (button.innerText || button.textContent || "").trim().toLowerCase();
-          const aria = (button.getAttribute("aria-label") || "").trim().toLowerCase();
-          return [text, aria].some((value) => value.includes("accept") || value.includes("agree") || value.includes("i agree"));
-        });
+    const clickableElements = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"], a'));
+    const target = clickableElements.find((element) => {
+      const text = element.innerText || element.textContent || "";
+      const aria = element.getAttribute("aria-label") || "";
+      const value = element.getAttribute("value") || "";
+      return [text, aria, value].some((candidate) => isMatch(candidate));
+    });
 
-        if (!target) {
-          return false;
-        }
-
-        target.click();
-        return true;
-      }, selector);
-
-      if (clicked) {
-        await delay(2000);
-        logger.info("google consent accepted", { selector });
-        return true;
-      }
-    } catch (_error) {
-      // Ignore and continue trying other selectors.
+    if (!target) {
+      return null;
     }
+
+    target.click();
+    return {
+      text: (target.innerText || target.textContent || target.getAttribute("aria-label") || target.getAttribute("value") || "").trim()
+    };
+  }, consentPhrases);
+
+  if (!clicked) {
+    return false;
   }
 
-  return false;
+  logger.info("google consent accepted", { matchedText: clicked.text });
+  await delay(4000);
+  return true;
+};
+
+const ensureUsableGooglePage = async (page, targetUrl) => {
+  if (!page.url().includes("consent.google.com")) {
+    return;
+  }
+
+  const diagnostics = await getPageDiagnostics(page);
+  logger.warn("google consent redirect detected", diagnostics);
+
+  const accepted = await acceptConsentIfPresent(page);
+
+  if (!accepted) {
+    throw new Error("Google consent page detected but no consent button was matched.");
+  }
+
+  await page.goto(targetUrl, {
+    waitUntil: "networkidle2",
+    timeout: 120000
+  });
+  await delay(3000);
 };
 
 const extractLeadCandidates = async (page, requestedIndustry, countryMeta, maxItems) => {
@@ -160,19 +212,22 @@ const getPageDiagnostics = async (page) => {
 };
 
 const openMapsByDirectUrl = async (page, query) => {
-  await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, {
+  const targetUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en&gl=GB`;
+  await page.goto(targetUrl, {
     waitUntil: "networkidle2",
     timeout: 120000
   });
+  await ensureUsableGooglePage(page, targetUrl);
 };
 
 const openMapsBySearchBox = async (page, query) => {
-  await page.goto("https://www.google.com/maps", {
+  const targetUrl = "https://www.google.com/maps?hl=en&gl=GB";
+  await page.goto(targetUrl, {
     waitUntil: "networkidle2",
     timeout: 120000
   });
 
-  await acceptConsentIfPresent(page);
+  await ensureUsableGooglePage(page, targetUrl);
   await page.waitForSelector('#searchboxinput, input[aria-label="Search Google Maps"]', { timeout: 30000 });
   await page.click('#searchboxinput, input[aria-label="Search Google Maps"]');
   await page.keyboard.down("Control");
@@ -184,10 +239,12 @@ const openMapsBySearchBox = async (page, query) => {
 };
 
 const openGoogleLocalResults = async (page, query) => {
-  await page.goto(`https://www.google.com/search?tbm=lcl&q=${encodeURIComponent(query)}`, {
+  const targetUrl = `https://www.google.com/search?tbm=lcl&hl=en&gl=GB&q=${encodeURIComponent(query)}`;
+  await page.goto(targetUrl, {
     waitUntil: "networkidle2",
     timeout: 120000
   });
+  await ensureUsableGooglePage(page, targetUrl);
 };
 
 const collectFromQuery = async (page, query, industry, country, searchLimit, scrollRounds) => {
@@ -200,7 +257,6 @@ const collectFromQuery = async (page, query, industry, country, searchLimit, scr
   for (const strategy of strategies) {
     try {
       await strategy.open();
-      await acceptConsentIfPresent(page);
       await delay(3000);
 
       for (let index = 0; index < scrollRounds; index += 1) {
@@ -226,6 +282,7 @@ const collectFromQuery = async (page, query, industry, country, searchLimit, scr
       logger.warn("lead extraction returned zero results", {
         query,
         strategy: strategy.name,
+        consentLikePage: looksLikeConsentText(diagnostics.bodyPreview),
         ...diagnostics
       });
     } catch (error) {
@@ -254,6 +311,7 @@ const collectLeads = async () => {
     const page = await browser.newPage();
     await page.setUserAgent(process.env.USER_AGENT ?? "Mozilla/5.0");
     await page.setViewport({ width: 1440, height: 900 });
+    await preloadGoogleContext(page);
 
     for (const industry of industries) {
       const query = buildMapsQuery(industry, country.name);
