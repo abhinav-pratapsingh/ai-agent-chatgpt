@@ -60,6 +60,43 @@ const getEmailStatsCollection = async () => {
   return getCollection(collectionNames.emailStats);
 };
 
+const compactLeadFields = (lead) => {
+  const fields = {
+    name: lead.name,
+    sourceText: lead.sourceText ?? null,
+    hasWebsite: Boolean(lead.hasWebsite),
+    email: lead.email ?? null,
+    industry: lead.industry,
+    city: lead.city,
+    country: lead.country,
+    timezone: lead.timezone ?? "UTC",
+    tier: lead.tier,
+    speedScore: lead.speedScore ?? null,
+    slowWebsite: Boolean(lead.slowWebsite),
+    homepageLoadTimeMs: lead.homepageLoadTimeMs ?? null,
+    score: lead.score ?? 0,
+    isTarget: Boolean(lead.isTarget),
+    subjectLine: lead.subjectLine ?? null,
+    emailBody: lead.emailBody ?? null,
+    followupBody: lead.followupBody ?? null,
+    updatedAt: new Date()
+  };
+
+  if (lead.website) {
+    fields.website = lead.website;
+  }
+
+  if (lead.mapsUrl) {
+    fields.mapsUrl = lead.mapsUrl;
+  }
+
+  if (lead.placeId) {
+    fields.placeId = lead.placeId;
+  }
+
+  return fields;
+};
+
 const upsertLead = async (lead) => {
   const leads = await getLeadsCollection();
   const identityFilter = lead.website
@@ -78,28 +115,11 @@ const upsertLead = async (lead) => {
   await leads.updateOne(
     identityFilter,
     {
-      $set: {
-        name: lead.name,
-        website: lead.website ?? null,
-        mapsUrl: lead.mapsUrl ?? null,
-        placeId: lead.placeId ?? null,
-        sourceText: lead.sourceText ?? null,
-        hasWebsite: Boolean(lead.hasWebsite),
-        email: lead.email ?? null,
-        industry: lead.industry,
-        city: lead.city,
-        country: lead.country,
-        timezone: lead.timezone ?? "UTC",
-        tier: lead.tier,
-        speedScore: lead.speedScore ?? null,
-        slowWebsite: Boolean(lead.slowWebsite),
-        homepageLoadTimeMs: lead.homepageLoadTimeMs ?? null,
-        score: lead.score ?? 0,
-        isTarget: Boolean(lead.isTarget),
-        subjectLine: lead.subjectLine ?? null,
-        emailBody: lead.emailBody ?? null,
-        followupBody: lead.followupBody ?? null,
-        updatedAt: new Date()
+      $set: compactLeadFields(lead),
+      $unset: {
+        ...(lead.website ? {} : { website: "" }),
+        ...(lead.mapsUrl ? {} : { mapsUrl: "" }),
+        ...(lead.placeId ? {} : { placeId: "" })
       },
       $setOnInsert: {
         createdAt: new Date(),
@@ -121,6 +141,31 @@ const findLeads = async (query = {}, options = {}) => {
 const getLeadById = async (id) => {
   const leads = await getLeadsCollection();
   return leads.findOne({ _id: id });
+};
+
+const getSentEmails = async (limit = 50) => {
+  const leads = await getLeadsCollection();
+  return leads.find(
+    { contacted: true },
+    {
+      projection: {
+        name: 1,
+        email: 1,
+        city: 1,
+        country: 1,
+        industry: 1,
+        subjectLine: 1,
+        emailBody: 1,
+        followupBody: 1,
+        contactedDate: 1,
+        followupSent: 1,
+        website: 1,
+        hasWebsite: 1
+      },
+      sort: { contactedDate: -1 },
+      limit
+    }
+  ).toArray();
 };
 
 const updateLead = async (filter, update) => {
@@ -218,6 +263,7 @@ export {
   getEmailStatsCollection,
   getLeadById,
   getLeadsCollection,
+  getSentEmails,
   incrementEmailStats,
   resetEmailStatsIfNeeded,
   updateLead,

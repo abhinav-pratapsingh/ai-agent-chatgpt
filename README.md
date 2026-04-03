@@ -116,6 +116,12 @@ Check whether the API is up and whether a campaign is currently running:
 curl http://127.0.0.1:6080/api/campaign/status
 ```
 
+See the most recent sent emails:
+
+```bash
+curl http://127.0.0.1:6080/api/emails/sent
+```
+
 This manual trigger runs the full flow:
 
 - collect leads
@@ -171,6 +177,7 @@ Manual trigger with PM2:
 ```bash
 curl -X POST http://127.0.0.1:6080/api/campaign/run
 curl http://127.0.0.1:6080/api/campaign/status
+curl http://127.0.0.1:6080/api/emails/sent
 ```
 
 ## Amazon EC2 Ubuntu Setup

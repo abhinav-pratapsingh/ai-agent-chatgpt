@@ -5,7 +5,7 @@ import { getRotatedCountry } from "./config/countryConfig.js";
 import { getOutreachMode } from "./config/outreachModeConfig.js";
 import { getSmtpProviderConfig, getSmtpProviderName } from "./config/smtpConfig.js";
 import { getTierMetadata } from "./config/tierConfig.js";
-import { connectToMongo, getEmailStats } from "./database/mongo.js";
+import { connectToMongo, getEmailStats, getSentEmails } from "./database/mongo.js";
 import { logger } from "./utils/logger.js";
 
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
@@ -56,6 +56,17 @@ const buildStatusPayload = async () => {
   };
 };
 
+const buildSentEmailsPayload = async () => {
+  await connectToMongo();
+  const sentEmails = await getSentEmails(50);
+
+  return {
+    status: "ok",
+    count: sentEmails.length,
+    sentEmails
+  };
+};
+
 const requestHandler = async (request, response) => {
   if (request.method === "POST" && request.url === "/api/campaign/run") {
     if (!isLocalRequest(request)) {
@@ -93,6 +104,19 @@ const requestHandler = async (request, response) => {
 
   if (request.method === "GET" && request.url === "/api/campaign/status") {
     sendJson(response, 200, await buildStatusPayload());
+    return;
+  }
+
+  if (request.method === "GET" && request.url === "/api/emails/sent") {
+    if (!isLocalRequest(request)) {
+      sendJson(response, 403, {
+        status: "forbidden",
+        message: "Sent email history is only available from localhost."
+      });
+      return;
+    }
+
+    sendJson(response, 200, await buildSentEmailsPayload());
     return;
   }
 
@@ -138,6 +162,4 @@ if (process.env.START_MODE === "api" || (process.argv[1] && process.argv[1].ends
   });
 }
 
-export { buildStatusPayload, requestHandler, startServer };
-
-
+export { buildSentEmailsPayload, buildStatusPayload, requestHandler, startServer };
