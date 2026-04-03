@@ -84,7 +84,7 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
-if (process.argv[1] && process.argv[1].endsWith("campaignScheduler.js")) {
+if (process.env.START_MODE === "scheduler" || (process.argv[1] && process.argv[1].endsWith("campaignScheduler.js"))) {
   startScheduler().catch((error) => {
     logger.error("scheduler startup failed", { error: error.message });
     process.exit(1);
@@ -92,4 +92,5 @@ if (process.argv[1] && process.argv[1].endsWith("campaignScheduler.js")) {
 }
 
 export { getCampaignState, runCampaignCycle, startScheduler };
+
 

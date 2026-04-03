@@ -13,7 +13,8 @@ module.exports = {
       kill_timeout: 10000,
       env: {
         NODE_ENV: "production",
-        PORT: 6080
+        PORT: 6080,
+        START_MODE: "api"
       }
     },
     {
@@ -28,7 +29,8 @@ module.exports = {
       max_memory_restart: "750M",
       kill_timeout: 10000,
       env: {
-        NODE_ENV: "production"
+        NODE_ENV: "production",
+        START_MODE: "scheduler"
       }
     }
   ]

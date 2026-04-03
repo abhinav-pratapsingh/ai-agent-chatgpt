@@ -131,7 +131,7 @@ const startServer = async () => {
     });
 };
 
-if (process.argv[1] && process.argv[1].endsWith("server.js")) {
+if (process.env.START_MODE === "api" || (process.argv[1] && process.argv[1].endsWith("server.js"))) {
   startServer().catch((error) => {
     logger.error("server startup failed", { error: error.message });
     process.exit(1);
@@ -139,4 +139,5 @@ if (process.argv[1] && process.argv[1].endsWith("server.js")) {
 }
 
 export { buildStatusPayload, requestHandler, startServer };
+
 
