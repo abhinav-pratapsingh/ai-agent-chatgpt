@@ -2,6 +2,7 @@ import puppeteer from "puppeteer";
 import { getRotatedCountry } from "../config/countryConfig.js";
 import { getTierMetadata } from "../config/tierConfig.js";
 import { upsertLead } from "../database/mongo.js";
+import { delay } from "../utils/delay.js";
 import { logger } from "../utils/logger.js";
 
 const openBrowser = async () => {
@@ -40,11 +41,11 @@ const collectLeads = async () => {
         timeout: 120000
       });
 
-      await page.waitForTimeout(3000);
+      await delay(3000);
 
       for (let index = 0; index < scrollRounds; index += 1) {
         await page.mouse.wheel({ deltaY: 1200 });
-        await page.waitForTimeout(1500);
+        await delay(1500);
       }
 
       const leads = await page.evaluate((maxItems, tierValue, countryMeta) => {

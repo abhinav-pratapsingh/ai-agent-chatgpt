@@ -96,6 +96,31 @@ npm install
 node server.js
 ```
 
+## Manual Trigger API
+
+Start the local API server:
+
+```bash
+node server.js
+```
+
+Trigger the full campaign immediately from the same server:
+
+```bash
+curl -X POST http://127.0.0.1:6000/api/campaign/run
+```
+
+This manual trigger runs the full flow:
+
+- collect leads
+- extract emails
+- analyze website speed
+- score leads
+- send outreach emails
+- send follow-up emails
+
+The endpoint is localhost-only, so it will only accept requests from the same machine.
+
 ## Run Scheduler
 
 ```bash
