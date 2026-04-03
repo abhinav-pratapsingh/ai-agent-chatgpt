@@ -61,20 +61,11 @@ const collectLeads = async () => {
         await delay(1500);
       }
 
-      const leads = await page.evaluate((maxItems, requestedIndustry, countryMeta) => {
-        const anchors = Array.from(document.querySelectorAll('a[href*="/maps/place/"]'));
-        const uniqueAnchors = [];
-        const seenHrefs = new Set();
-
-        for (const anchor of anchors) {
-          const href = anchor.href;
-          if (!href || seenHrefs.has(href)) {
-            continue;
-          }
-
-          seenHrefs.add(href);
-          uniqueAnchors.push(anchor);
-        }
+      const extraction = await page.evaluate((maxItems, requestedIndustry, countryMeta) => {
+        const articleCards = Array.from(document.querySelectorAll('div[role="article"]'));
+        const placeAnchors = Array.from(document.querySelectorAll('a[href*="/maps/place/"]'));
+        const cards = articleCards.length > 0 ? articleCards : placeAnchors;
+        const seenKeys = new Set();
 
         const extractWebsite = (container) => {
           const websiteAnchor = Array.from(container?.querySelectorAll('a[href^="http"]') ?? []).find((link) => {
@@ -85,32 +76,65 @@ const collectLeads = async () => {
           return websiteAnchor?.href ?? null;
         };
 
-        return uniqueAnchors.slice(0, maxItems).map((anchor) => {
-          const card = anchor.closest('div[role="article"]') ?? anchor.parentElement ?? anchor;
-          const text = card?.innerText ?? anchor.innerText ?? "";
+        const results = [];
+
+        for (const candidate of cards) {
+          const card = candidate.closest?.('div[role="article"]') ?? candidate;
+          const anchor = card.querySelector?.('a[href*="/maps/place/"]') ?? candidate;
+          const mapsUrl = anchor?.href ?? null;
+          const key = mapsUrl || card.innerText || "";
+
+          if (!key || seenKeys.has(key)) {
+            continue;
+          }
+
+          seenKeys.add(key);
+
+          const text = card?.innerText ?? anchor?.innerText ?? "";
           const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-          const businessName = anchor.getAttribute("aria-label")?.trim() || lines[0] || "Unknown Business";
-          const cityLine = lines.find((line) => /,/.test(line)) || lines.find((line) => /\b[A-Z][a-z]+\b/.test(line)) || countryMeta.name;
-          const mapsUrl = anchor.href ?? null;
+          const businessName = anchor?.getAttribute?.("aria-label")?.trim() || lines[0] || null;
+
+          if (!businessName) {
+            continue;
+          }
+
+          const locationLine = lines.find((line) => /,/.test(line)) || lines.find((line) => /\b[A-Z][a-z]+\b/.test(line)) || countryMeta.name;
           const website = extractWebsite(card);
           const placeId = mapsUrl ? mapsUrl.split("?")[0] : null;
 
-          return {
+          results.push({
             name: businessName,
             website,
             hasWebsite: Boolean(website),
-            city: cityLine,
+            city: locationLine,
             country: countryMeta.name,
             mapsUrl,
             placeId,
             industry: requestedIndustry,
             sourceText: text,
             tier: requestedIndustry
-          };
-        });
+          });
+
+          if (results.length >= maxItems) {
+            break;
+          }
+        }
+
+        return {
+          articleCardCount: articleCards.length,
+          placeAnchorCount: placeAnchors.length,
+          results
+        };
       }, searchLimit, industry, country);
 
-      for (const rawLead of leads) {
+      logger.info("lead extraction summary", {
+        query,
+        articleCardCount: extraction.articleCardCount,
+        placeAnchorCount: extraction.placeAnchorCount,
+        extractedCount: extraction.results.length
+      });
+
+      for (const rawLead of extraction.results) {
         const city = sanitizeCity(rawLead.city, country.name);
         const lead = {
           ...rawLead,
