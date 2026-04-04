@@ -1,4 +1,4 @@
-import { MongoClient } from "mongodb";
+﻿import { MongoClient } from "mongodb";
 import { getSmtpProviderName } from "../config/smtpConfig.js";
 
 let client;
@@ -97,20 +97,28 @@ const compactLeadFields = (lead) => {
   return fields;
 };
 
+const buildLeadIdentityFilter = (lead) => {
+  const identityCandidates = [
+    lead.placeId ? { placeId: lead.placeId } : null,
+    lead.mapsUrl ? { mapsUrl: lead.mapsUrl } : null,
+    lead.website ? { website: lead.website } : null
+  ].filter(Boolean);
+
+  if (identityCandidates.length > 0) {
+    return { $or: identityCandidates };
+  }
+
+  return {
+    name: lead.name,
+    city: lead.city,
+    country: lead.country,
+    industry: lead.industry
+  };
+};
+
 const upsertLead = async (lead) => {
   const leads = await getLeadsCollection();
-  const identityFilter = lead.placeId
-    ? { placeId: lead.placeId }
-    : lead.mapsUrl
-      ? { mapsUrl: lead.mapsUrl }
-      : lead.website
-        ? { website: lead.website }
-        : {
-            name: lead.name,
-            city: lead.city,
-            country: lead.country,
-            industry: lead.industry
-          };
+  const identityFilter = buildLeadIdentityFilter(lead);
 
   await leads.updateOne(
     identityFilter,
@@ -269,4 +277,3 @@ export {
   updateLead,
   upsertLead
 };
-
