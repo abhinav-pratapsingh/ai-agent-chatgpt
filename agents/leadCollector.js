@@ -17,6 +17,22 @@ const consentPhrases = [
   "allow all"
 ];
 
+const ignoredBusinessPhrases = [
+  "collapse side panel",
+  "directions",
+  "website",
+  "share",
+  "save",
+  "nearby",
+  "send to phone",
+  "copy link",
+  "overview",
+  "reviews",
+  "photos",
+  "updates",
+  "about"
+];
+
 const openBrowser = async () => {
   return puppeteer.launch({
     headless: process.env.PUPPETEER_HEADLESS !== "false",
@@ -49,6 +65,15 @@ const normalizeWebsite = (website) => {
 const sanitizeCity = (city, countryName) => {
   const normalizedCity = String(city ?? "").replace(/\s+/g, " ").trim();
   return normalizedCity || countryName;
+};
+
+const normalizeText = (value) => {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
+};
+
+const isIgnoredBusinessName = (value) => {
+  const normalizedValue = normalizeText(value).toLowerCase();
+  return !normalizedValue || ignoredBusinessPhrases.some((phrase) => normalizedValue.includes(phrase));
 };
 
 const looksLikeConsentText = (text) => {
@@ -146,75 +171,6 @@ const ensureUsableGooglePage = async (page, targetUrl) => {
   await delay(3000);
 };
 
-const extractLeadCandidates = async (page, requestedIndustry, countryMeta, maxItems) => {
-  return page.evaluate((industry, country, limit) => {
-    const articleCards = Array.from(document.querySelectorAll('div[role="article"]'));
-    const placeAnchors = Array.from(document.querySelectorAll('a[href*="/maps/place/"]'));
-    const feedCards = Array.from(document.querySelectorAll('[data-result-index], [jsaction*="pane"]'));
-    const cards = articleCards.length > 0 ? articleCards : placeAnchors.length > 0 ? placeAnchors : feedCards;
-    const seenKeys = new Set();
-    const results = [];
-
-    const extractWebsite = (container) => {
-      const websiteAnchor = Array.from(container?.querySelectorAll('a[href^="http"]') ?? []).find((link) => {
-        const href = link.href ?? "";
-        return !href.includes("google.") && !href.includes("googleusercontent.") && !href.includes("/maps/");
-      });
-
-      return websiteAnchor?.href ?? null;
-    };
-
-    for (const candidate of cards) {
-      const card = candidate.closest?.('div[role="article"]') ?? candidate;
-      const anchor = card.querySelector?.('a[href*="/maps/place/"]') ?? candidate.querySelector?.('a[href*="/maps/place/"]') ?? candidate;
-      const mapsUrl = anchor?.href ?? null;
-      const text = card?.innerText ?? anchor?.innerText ?? "";
-      const key = mapsUrl || text;
-
-      if (!key || seenKeys.has(key)) {
-        continue;
-      }
-
-      seenKeys.add(key);
-
-      const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-      const businessName = anchor?.getAttribute?.("aria-label")?.trim() || lines[0] || null;
-
-      if (!businessName || businessName.toLowerCase().includes("google") || businessName.toLowerCase().includes("map")) {
-        continue;
-      }
-
-      const cityLine = lines.find((line) => /,/.test(line)) || lines.find((line) => /\b[A-Z][a-z]+\b/.test(line)) || country.name;
-      const website = extractWebsite(card);
-      const placeId = mapsUrl ? mapsUrl.split("?")[0] : null;
-
-      results.push({
-        name: businessName,
-        website,
-        hasWebsite: Boolean(website),
-        city: cityLine,
-        country: country.name,
-        mapsUrl,
-        placeId,
-        industry,
-        sourceText: text,
-        tier: industry
-      });
-
-      if (results.length >= limit) {
-        break;
-      }
-    }
-
-    return {
-      articleCardCount: articleCards.length,
-      placeAnchorCount: placeAnchors.length,
-      feedCardCount: feedCards.length,
-      results
-    };
-  }, requestedIndustry, countryMeta, maxItems);
-};
-
 const openMapsByDirectUrl = async (page, query) => {
   const targetUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en&gl=GB`;
   await page.goto(targetUrl, {
@@ -251,7 +207,121 @@ const openGoogleLocalResults = async (page, query) => {
   await ensureUsableGooglePage(page, targetUrl);
 };
 
-const collectFromQuery = async (page, query, industry, country, searchLimit, scrollRounds) => {
+const extractResultHandles = async (page) => {
+  await page.waitForSelector('div[role="article"], a[href*="/maps/place/"]', { timeout: 30000 }).catch(() => {});
+
+  const handles = await page.$$eval('div[role="article"]', (cards) => {
+    return cards.map((_card, index) => index);
+  });
+
+  return handles;
+};
+
+const extractCardSummaryAtIndex = async (page, index) => {
+  return page.evaluate((cardIndex) => {
+    const cards = Array.from(document.querySelectorAll('div[role="article"]'));
+    const card = cards[cardIndex];
+
+    if (!card) {
+      return null;
+    }
+
+    const anchor = card.querySelector('a[href*="/maps/place/"]');
+    const text = card.innerText ?? "";
+    const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+    return {
+      text,
+      lines,
+      ariaLabel: anchor?.getAttribute("aria-label")?.trim() ?? null,
+      mapsUrl: anchor?.href ?? null
+    };
+  }, index);
+};
+
+const openPlaceDetailsFromCard = async (page, index) => {
+  const clicked = await page.evaluate((cardIndex) => {
+    const cards = Array.from(document.querySelectorAll('div[role="article"]'));
+    const card = cards[cardIndex];
+    if (!card) {
+      return false;
+    }
+
+    const target = card.querySelector('a[href*="/maps/place/"]') ?? card;
+    target.click();
+    return true;
+  }, index);
+
+  if (!clicked) {
+    return false;
+  }
+
+  await delay(4000);
+  return true;
+};
+
+const extractPlaceDetails = async (page, fallbackIndustry, countryName) => {
+  return page.evaluate((industry, country) => {
+    const getText = (selectors) => {
+      for (const selector of selectors) {
+        const element = document.querySelector(selector);
+        const value = (element?.innerText || element?.textContent || "").trim();
+        if (value) {
+          return value;
+        }
+      }
+      return null;
+    };
+
+    const getHref = (selectors) => {
+      for (const selector of selectors) {
+        const element = document.querySelector(selector);
+        const href = element?.href?.trim();
+        if (href) {
+          return href;
+        }
+      }
+      return null;
+    };
+
+    const title = getText(['h1', 'h1 span', '[role="main"] h1']);
+    const address = getText(['button[data-item-id="address"]', 'button[aria-label*="Address"]', '[data-item-id="address"]']);
+    const category = getText(['button[jsaction*="category"]', 'button[aria-label*="Category"]']);
+    const website = getHref(['a[data-item-id="authority"]', 'a[aria-label*="Website"]', 'a[data-tooltip*="website"]']);
+    const phone = getText(['button[data-item-id^="phone"]', 'button[aria-label*="Phone"]']);
+    const panelText = (document.querySelector('[role="main"]')?.innerText ?? document.body?.innerText ?? '').trim();
+    const cityGuess = address?.split(',').slice(-2, -1)[0]?.trim() || address?.split(',')[0]?.trim() || country;
+
+    return {
+      name: title,
+      city: cityGuess,
+      country,
+      industry: category || industry,
+      website,
+      hasWebsite: Boolean(website),
+      phone,
+      sourceText: panelText,
+      mapsUrl: window.location.href,
+      placeId: window.location.href.split('?')[0]
+    };
+  }, fallbackIndustry, countryName);
+};
+
+const buildLeadFromPlaceDetails = (details, countryName, industry, tierId) => {
+  const city = sanitizeCity(details.city, countryName);
+  return {
+    ...details,
+    name: normalizeText(details.name),
+    website: normalizeWebsite(details.website),
+    hasWebsite: Boolean(details.website),
+    city,
+    country: countryName,
+    timezone: inferTimezone(countryName, city),
+    industry: details.industry || industry,
+    tier: tierId
+  };
+};
+
+const collectFromQuery = async (page, query, industry, country, searchLimit, scrollRounds, tierId) => {
   const strategies = [
     { name: "maps-direct-url", open: () => openMapsByDirectUrl(page, query) },
     { name: "maps-search-box", open: () => openMapsBySearchBox(page, query) },
@@ -268,18 +338,51 @@ const collectFromQuery = async (page, query, industry, country, searchLimit, scr
         await delay(1500);
       }
 
-      const extraction = await extractLeadCandidates(page, industry, country, searchLimit);
+      const cardIndexes = await extractResultHandles(page);
+      const results = [];
+
+      for (const cardIndex of cardIndexes) {
+        if (results.length >= searchLimit) {
+          break;
+        }
+
+        const summary = await extractCardSummaryAtIndex(page, cardIndex);
+        const candidateName = normalizeText(summary?.ariaLabel || summary?.lines?.[0] || "");
+
+        if (isIgnoredBusinessName(candidateName)) {
+          continue;
+        }
+
+        const opened = await openPlaceDetailsFromCard(page, cardIndex);
+        if (!opened) {
+          continue;
+        }
+
+        const details = await extractPlaceDetails(page, industry, country.name);
+        const lead = buildLeadFromPlaceDetails(details, country.name, industry, tierId);
+
+        if (isIgnoredBusinessName(lead.name)) {
+          await openMapsByDirectUrl(page, query);
+          await delay(3000);
+          continue;
+        }
+
+        results.push(lead);
+        await openMapsByDirectUrl(page, query);
+        await delay(3000);
+      }
+
       logger.info("lead extraction summary", {
         query,
         strategy: strategy.name,
-        articleCardCount: extraction.articleCardCount,
-        placeAnchorCount: extraction.placeAnchorCount,
-        feedCardCount: extraction.feedCardCount,
-        extractedCount: extraction.results.length
+        articleCardCount: cardIndexes.length,
+        placeAnchorCount: cardIndexes.length,
+        feedCardCount: cardIndexes.length,
+        extractedCount: results.length
       });
 
-      if (extraction.results.length > 0) {
-        return extraction.results;
+      if (results.length > 0) {
+        return results;
       }
 
       const diagnostics = await getPageDiagnostics(page);
@@ -313,28 +416,17 @@ const collectLeadSet = async ({ queries, country, searchLimit, scrollRounds, tie
 
     for (const queryConfig of queries) {
       logger.info("collecting leads", { query: queryConfig.query });
-      const rawLeads = await collectFromQuery(page, queryConfig.query, queryConfig.industry, country, queryConfig.maxItems ?? searchLimit, scrollRounds);
+      const leads = await collectFromQuery(page, queryConfig.query, queryConfig.industry, country, queryConfig.maxItems ?? searchLimit, scrollRounds, tierId);
 
-      for (const rawLead of rawLeads) {
-        const city = sanitizeCity(rawLead.city, country.name);
-        const lead = {
-          ...rawLead,
-          website: normalizeWebsite(rawLead.website),
-          hasWebsite: Boolean(rawLead.website),
-          city,
-          country: country.name,
-          timezone: inferTimezone(country.name, city),
-          industry: queryConfig.industry,
-          tier: tierId
-        };
-
+      for (const lead of leads) {
         await upsertLead(lead);
         collectedLeads.push(lead);
         logger.info("lead collected", {
           businessName: lead.name,
           industry: lead.industry,
           city: lead.city,
-          hasWebsite: lead.hasWebsite
+          hasWebsite: lead.hasWebsite,
+          website: lead.website ?? null
         });
       }
     }
