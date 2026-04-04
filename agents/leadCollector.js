@@ -19,6 +19,7 @@ const consentPhrases = [
 
 const ignoredBusinessPhrases = [
   "collapse side panel",
+  "results",
   "directions",
   "website",
   "share",
@@ -80,7 +81,7 @@ const sanitizeCity = (city, countryName) => {
 
 const isIgnoredBusinessName = (value) => {
   const normalizedValue = normalizeText(value).toLowerCase();
-  return !normalizedValue || ignoredBusinessPhrases.some((phrase) => normalizedValue.includes(phrase));
+  return !normalizedValue || ignoredBusinessPhrases.some((phrase) => normalizedValue === phrase || normalizedValue.includes(phrase));
 };
 
 const looksLikeConsentText = (text) => {
@@ -308,6 +309,21 @@ const extractCityFromAddress = (address, country) => {
   return country;
 };
 
+const extractBusinessNameFromSourceText = (sourceText, fallbackName) => {
+  const lines = String(sourceText ?? "")
+    .split("\n")
+    .map((line) => normalizeText(line))
+    .filter(Boolean)
+    .filter((line) => !isIgnoredBusinessName(line))
+    .filter((line) => !/^\d+(\.\d+)?\(?\d*/.test(line))
+    .filter((line) => !/^(open|closed|overview|about|photos|reviews|updates|share)$/i.test(line))
+    .filter((line) => !/^(level|suite|shop|unit|floor)\b/i.test(line))
+    .filter((line) => !/^\+?\d[\d\s()+-]+$/.test(line));
+
+  const bestLine = lines.find((line) => line.length > 2 && line.length < 90);
+  return bestLine || fallbackName;
+};
+
 const extractPlaceDetails = async (page, fallbackIndustry, countryName) => {
   return page.evaluate((industry, country) => {
     const getText = (selectors) => {
@@ -352,8 +368,13 @@ const extractPlaceDetails = async (page, fallbackIndustry, countryName) => {
       placeId: window.location.href.split('?')[0]
     };
   }, fallbackIndustry, countryName).then((details) => {
+    const resolvedName = isIgnoredBusinessName(details.name)
+      ? extractBusinessNameFromSourceText(details.sourceText, details.name)
+      : details.name;
+
     return {
       ...details,
+      name: resolvedName,
       city: extractCityFromAddress(details.address, countryName)
     };
   });
