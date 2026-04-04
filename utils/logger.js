@@ -1,3 +1,5 @@
+import { writeAppLog } from "../database/mongo.js";
+
 const logLevelOrder = {
   error: 0,
   warn: 1,
@@ -23,6 +25,8 @@ const log = (level, message, meta) => {
   }
 
   const output = formatMessage(level, message, meta);
+  const processName = process.env.START_MODE ?? "app";
+  void writeAppLog({ level, message, meta, processName });
 
   if (level === "error") {
     console.error(output);

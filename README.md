@@ -37,7 +37,17 @@ AI Outreach Agent is a Node.js automation project that collects business leads f
   /utils
     delay.js
     logger.js
+  /public
+    index.html
+    emails.html
+    app.js
+    sent-emails.js
+    styles.css
+    config.js
+  /deploy/nginx
+    ai-outreach-agent.conf
   server.js
+  ecosystem.config.cjs
   package.json
   .env.example
 ```
@@ -84,13 +94,23 @@ Each document stores:
 - createdAt
 - updatedAt
 
+### appLogs collection
+
+Each document stores:
+
+- level
+- message
+- meta
+- processName
+- timestamp
+
 ## Install
 
 ```bash
 npm install
 ```
 
-## Run Local Health Server
+## Run API Server
 
 ```bash
 node server.js
@@ -98,16 +118,10 @@ node server.js
 
 ## Manual Trigger API
 
-Start the local API server:
+Trigger the full campaign immediately:
 
 ```bash
-node server.js
-```
-
-Trigger the full campaign immediately from the same server:
-
-```bash
-curl -X POST http://127.0.0.1:6080/api/campaign/run
+curl -X POST http://127.0.0.1:6080/api/campaign/run -H "X-Admin-Key: YOUR_ADMIN_API_KEY"
 ```
 
 Run a single-business workflow test without sending:
@@ -115,7 +129,8 @@ Run a single-business workflow test without sending:
 ```bash
 curl -X POST http://127.0.0.1:6080/api/workflow/test \
   -H "Content-Type: application/json" \
-  -d "{\"businessName\":\"Australian Dentists Clinic\",\"countryName\":\"Australia\",\"industry\":\"dentists\"}"
+  -H "X-Admin-Key: YOUR_ADMIN_API_KEY" \
+  -d '{"businessName":"Australian Dentists Clinic","countryName":"Australia","industry":"dentists"}'
 ```
 
 Run a single-business workflow test and attempt sending:
@@ -123,33 +138,17 @@ Run a single-business workflow test and attempt sending:
 ```bash
 curl -X POST http://127.0.0.1:6080/api/workflow/test \
   -H "Content-Type: application/json" \
-  -d "{\"businessName\":\"Australian Dentists Clinic\",\"countryName\":\"Australia\",\"industry\":\"dentists\",\"send\":true}"
+  -H "X-Admin-Key: YOUR_ADMIN_API_KEY" \
+  -d '{"businessName":"Australian Dentists Clinic","countryName":"Australia","industry":"dentists","send":true,"ignoreBusinessHours":true}'
 ```
 
-Check whether the API is up and whether a campaign is currently running:
+Check runtime status:
 
 ```bash
 curl http://127.0.0.1:6080/api/campaign/status
 ```
 
-See the most recent sent emails:
-
-```bash
-curl http://127.0.0.1:6080/api/emails/sent
-```
-
-This manual trigger runs the full flow:
-
-- collect leads
-- extract emails
-- analyze website speed
-- score leads
-- send outreach emails
-- send follow-up emails
-
-The endpoint is localhost-only, so it will only accept requests from the same machine.
-
-## Run Scheduler
+## Scheduler
 
 ```bash
 node scheduler/campaignScheduler.js
@@ -157,71 +156,135 @@ node scheduler/campaignScheduler.js
 
 The scheduler starts one cycle immediately, then checks every 15 minutes by default. Emails are only sent when the individual lead is inside their own local 9 AM to 6 PM business window.
 
-To change the polling cadence, set:
-
-```env
-CAMPAIGN_POLL_CRON=*/15 * * * *
-STATS_RESET_CRON=0 * * * *
-```
-
 ## PM2 Setup
 
 ```bash
-npm install
 pm2 delete ai-outreach-api ai-outreach-agent
-pm2 start ecosystem.config.cjs
+pm2 start ecosystem.config.cjs --update-env
 pm2 save
 pm2 startup
 ```
 
-This ecosystem file starts:
-
-- `ai-outreach-api` on port `6080`
-- `ai-outreach-agent` for the scheduler
-
-Useful PM2 commands:
+Useful commands:
 
 ```bash
 pm2 list
 pm2 logs ai-outreach-api --lines 100
 pm2 logs ai-outreach-agent --lines 100
-pm2 restart ecosystem.config.cjs
+pm2 restart ecosystem.config.cjs --update-env
 ```
 
-Manual trigger with PM2:
+## Split Deployment: Frontend On Your PC, Backend On Server
+
+### Server `.env`
+
+Set these on the backend server:
+
+```env
+PORT=6080
+FRONTEND_ORIGIN=http://localhost:4173
+ADMIN_API_KEY=change-this-admin-key
+```
+
+If your PC frontend will run on another local port, update `FRONTEND_ORIGIN` to match exactly.
+
+### Frontend On Your PC
+
+Serve the `public` folder on your PC:
 
 ```bash
-curl -X POST http://127.0.0.1:6080/api/campaign/run
-curl -X POST http://127.0.0.1:6080/api/workflow/test -H "Content-Type: application/json" -d "{\"businessName\":\"Australian Dentists Clinic\",\"countryName\":\"Australia\",\"industry\":\"dentists\"}"
-curl http://127.0.0.1:6080/api/campaign/status
-curl http://127.0.0.1:6080/api/emails/sent
+npx serve public -l 4173
 ```
 
-## Amazon EC2 Ubuntu Setup
+Then open one of these in your browser:
+
+```text
+http://localhost:4173/?apiBase=http://YOUR_SERVER_PUBLIC_IP:6080&adminKey=YOUR_ADMIN_API_KEY
+http://localhost:4173/emails?apiBase=http://YOUR_SERVER_PUBLIC_IP:6080&adminKey=YOUR_ADMIN_API_KEY
+```
+
+The frontend stores those values in browser local storage, so you only need to pass them once. After that you can just open:
+
+```text
+http://localhost:4173/
+http://localhost:4173/emails
+```
+
+### Dashboard APIs Used By The Frontend
+
+```bash
+curl http://YOUR_SERVER_PUBLIC_IP:6080/api/dashboard -H "X-Admin-Key: YOUR_ADMIN_API_KEY"
+curl http://YOUR_SERVER_PUBLIC_IP:6080/api/leads/recent -H "X-Admin-Key: YOUR_ADMIN_API_KEY"
+curl http://YOUR_SERVER_PUBLIC_IP:6080/api/logs/recent -H "X-Admin-Key: YOUR_ADMIN_API_KEY"
+curl http://YOUR_SERVER_PUBLIC_IP:6080/api/emails/sent -H "X-Admin-Key: YOUR_ADMIN_API_KEY"
+```
+
+## Dashboard Pages
+
+Available frontend pages:
+
+```text
+/
+/dashboard
+/emails
+```
+
+Features included:
+
+- KPI summary cards
+- daily progress and lead breakdown panels
+- active config and SMTP provider comparison
+- recent leads pipeline table
+- live persisted logs from the app
+- sent email archive
+- full email viewer with subject, body, follow-up body, recipient, website, score, and send timing
+
+## Safe Test Send
+
+Before real sending, set:
+
+```env
+TEST_MODE=true
+TEST_RECIPIENT=your-email@example.com
+```
+
+Then restart PM2 and test one business with sending enabled:
+
+```bash
+pm2 restart ai-outreach-api ai-outreach-agent --update-env
+curl -X POST http://127.0.0.1:6080/api/workflow/test \
+  -H "Content-Type: application/json" \
+  -H "X-Admin-Key: YOUR_ADMIN_API_KEY" \
+  -d '{"businessName":"Australian Dentists Clinic","countryName":"Australia","industry":"dentists","send":true,"ignoreBusinessHours":true}'
+```
+
+## Nginx Setup
+
+Example config:
+
+```text
+deploy/nginx/ai-outreach-agent.conf
+```
+
+Ubuntu install steps:
 
 ```bash
 sudo apt update
-sudo apt install -y curl git
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-sudo npm install -g pm2
-git clone <your-repo-url> ai-outreach-agent
-cd ai-outreach-agent
-npm install
-cp .env.example .env
-pm2 start ecosystem.config.cjs
-pm2 save
-pm2 startup
+sudo apt install -y nginx
+sudo cp deploy/nginx/ai-outreach-agent.conf /etc/nginx/sites-available/ai-outreach-agent.conf
+sudo ln -sf /etc/nginx/sites-available/ai-outreach-agent.conf /etc/nginx/sites-enabled/ai-outreach-agent.conf
+sudo nginx -t
+sudo systemctl restart nginx
 ```
 
 ## Gmail SMTP Setup
 
 1. Turn on 2-Step Verification in the Gmail account.
 2. Create an App Password inside Google Account security settings.
-3. Put the Gmail address into GMAIL_USER.
-4. Put the generated app password into GMAIL_APP_PASSWORD.
-5. Set SMTP_PROVIDER=gmail.
-6. Set MAIL_FROM_EMAIL to the same Gmail address or an approved alias.
+3. Put the Gmail address into `GMAIL_USER`.
+4. Put the generated app password into `GMAIL_APP_PASSWORD`.
+5. Set `SMTP_PROVIDER=gmail`.
+6. Set `MAIL_FROM_EMAIL` to the same Gmail address or an approved alias.
 
 ## Ollama Setup
 
@@ -240,7 +303,7 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434
 
 ## Important Notes
 
-- Google Maps changes its markup often, so selectors in agents/leadCollector.js may need adjustment over time.
+- Google Maps changes its markup often, so selectors in `agents/leadCollector.js` may need adjustment over time.
 - Lighthouse and Puppeteer require extra system packages on some Linux servers.
-- Run in TEST_MODE=true first with TEST_RECIPIENT set to your own email.
+- Run in `TEST_MODE=true` first with `TEST_RECIPIENT` set to your own email.
 - Respect anti-spam laws and each provider's sending guidelines before contacting real businesses.

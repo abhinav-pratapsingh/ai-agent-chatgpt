@@ -1,4 +1,4 @@
-﻿import { MongoClient } from "mongodb";
+import { MongoClient } from "mongodb";
 import { getSmtpProviderName } from "../config/smtpConfig.js";
 
 let client;
@@ -6,7 +6,8 @@ let database;
 
 const collectionNames = {
   leads: "leads",
-  emailStats: "emailStats"
+  emailStats: "emailStats",
+  appLogs: "appLogs"
 };
 
 const connectToMongo = async () => {
@@ -35,6 +36,7 @@ const ensureCollections = async () => {
   const db = database ?? (await connectToMongo());
   const leads = db.collection(collectionNames.leads);
   const emailStats = db.collection(collectionNames.emailStats);
+  const appLogs = db.collection(collectionNames.appLogs);
 
   await Promise.all([
     leads.createIndex({ website: 1 }, { unique: true, sparse: true }),
@@ -43,7 +45,10 @@ const ensureCollections = async () => {
     leads.createIndex({ name: 1, city: 1, country: 1, industry: 1 }),
     leads.createIndex({ contacted: 1, followupSent: 1, score: -1 }),
     leads.createIndex({ nextFollowupAt: 1 }),
-    emailStats.createIndex({ provider: 1 }, { unique: true })
+    leads.createIndex({ updatedAt: -1 }),
+    emailStats.createIndex({ provider: 1 }, { unique: true }),
+    appLogs.createIndex({ timestamp: -1 }),
+    appLogs.createIndex({ level: 1, timestamp: -1 })
   ]);
 };
 
@@ -60,10 +65,15 @@ const getEmailStatsCollection = async () => {
   return getCollection(collectionNames.emailStats);
 };
 
+const getAppLogsCollection = async () => {
+  return getCollection(collectionNames.appLogs);
+};
+
 const compactLeadFields = (lead) => {
   const fields = {
     name: lead.name,
     sourceText: lead.sourceText ?? null,
+    address: lead.address ?? null,
     hasWebsite: Boolean(lead.hasWebsite),
     email: lead.email ?? null,
     industry: lead.industry,
@@ -146,9 +156,44 @@ const findLeads = async (query = {}, options = {}) => {
   return leads.find(query, options).toArray();
 };
 
+const countLeads = async (query = {}) => {
+  const leads = await getLeadsCollection();
+  return leads.countDocuments(query);
+};
+
 const getLeadById = async (id) => {
   const leads = await getLeadsCollection();
   return leads.findOne({ _id: id });
+};
+
+const getRecentLeads = async (limit = 25) => {
+  const leads = await getLeadsCollection();
+  return leads.find(
+    {},
+    {
+      projection: {
+        name: 1,
+        industry: 1,
+        city: 1,
+        country: 1,
+        score: 1,
+        hasWebsite: 1,
+        website: 1,
+        speedScore: 1,
+        email: 1,
+        contacted: 1,
+        followupSent: 1,
+        isTarget: 1,
+        subjectLine: 1,
+        emailBody: 1,
+        updatedAt: 1,
+        contactedDate: 1,
+        nextFollowupAt: 1
+      },
+      sort: { updatedAt: -1, createdAt: -1 },
+      limit
+    }
+  ).toArray();
 };
 
 const getSentEmails = async (limit = 50) => {
@@ -167,8 +212,12 @@ const getSentEmails = async (limit = 50) => {
         followupBody: 1,
         contactedDate: 1,
         followupSent: 1,
+        nextFollowupAt: 1,
         website: 1,
-        hasWebsite: 1
+        hasWebsite: 1,
+        speedScore: 1,
+        homepageLoadTimeMs: 1,
+        score: 1
       },
       sort: { contactedDate: -1 },
       limit
@@ -252,6 +301,26 @@ const incrementEmailStats = async (provider = getSmtpProviderName()) => {
   return getEmailStats(provider);
 };
 
+const writeAppLog = async ({ level, message, meta, processName }) => {
+  try {
+    const appLogs = await getAppLogsCollection();
+    await appLogs.insertOne({
+      level,
+      message,
+      meta: meta ?? null,
+      processName: processName ?? process.env.START_MODE ?? "app",
+      timestamp: new Date()
+    });
+  } catch {
+    // Logging must never break the main process.
+  }
+};
+
+const getRecentLogs = async (limit = 100) => {
+  const appLogs = await getAppLogsCollection();
+  return appLogs.find({}, { sort: { timestamp: -1 }, limit }).toArray();
+};
+
 const closeMongoConnection = async () => {
   if (client) {
     await client.close();
@@ -264,16 +333,21 @@ export {
   closeMongoConnection,
   collectionNames,
   connectToMongo,
+  countLeads,
   ensureCollections,
   findLeads,
+  getAppLogsCollection,
   getCollection,
   getEmailStats,
   getEmailStatsCollection,
   getLeadById,
   getLeadsCollection,
+  getRecentLeads,
+  getRecentLogs,
   getSentEmails,
   incrementEmailStats,
   resetEmailStatsIfNeeded,
   updateLead,
-  upsertLead
+  upsertLead,
+  writeAppLog
 };
