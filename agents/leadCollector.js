@@ -1,4 +1,4 @@
-import puppeteer from "puppeteer";
+ï»¿import puppeteer from "puppeteer";
 import { inferTimezone, getRotatedCountry } from "../config/countryConfig.js";
 import { getTierMetadata } from "../config/tierConfig.js";
 import { upsertLead } from "../database/mongo.js";
@@ -10,10 +10,10 @@ const consentPhrases = [
   "i agree",
   "agree",
   "accept",
-  "godkänn alla",
-  "jag godkänner",
+  "godkann alla",
+  "jag godkanner",
   "acceptera",
-  "tillåt alla",
+  "tillat alla",
   "allow all"
 ];
 
@@ -77,7 +77,11 @@ const isIgnoredBusinessName = (value) => {
 };
 
 const looksLikeConsentText = (text) => {
-  const normalizedText = String(text ?? "").trim().toLowerCase();
+  const normalizedText = String(text ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
   return consentPhrases.some((phrase) => normalizedText.includes(phrase));
 };
 
@@ -104,8 +108,9 @@ const preloadGoogleContext = async (page) => {
 
 const acceptConsentIfPresent = async (page) => {
   const clicked = await page.evaluate((phrases) => {
+    const normalize = (value) => String(value ?? "").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
     const isMatch = (value) => {
-      const normalizedValue = String(value ?? "").trim().toLowerCase();
+      const normalizedValue = normalize(value);
       return phrases.some((phrase) => normalizedValue.includes(phrase));
     };
 
@@ -210,10 +215,7 @@ const openGoogleLocalResults = async (page, query) => {
 const extractResultHandles = async (page) => {
   await page.waitForSelector('div[role="article"], a[href*="/maps/place/"]', { timeout: 30000 }).catch(() => {});
 
-  const handles = await page.$$eval('div[role="article"]', (cards) => {
-    return cards.map((_card, index) => index);
-  });
-
+  const handles = await page.$$eval('div[role="article"]', (cards) => cards.map((_card, index) => index));
   return handles;
 };
 
@@ -289,7 +291,8 @@ const extractPlaceDetails = async (page, fallbackIndustry, countryName) => {
     const website = getHref(['a[data-item-id="authority"]', 'a[aria-label*="Website"]', 'a[data-tooltip*="website"]']);
     const phone = getText(['button[data-item-id^="phone"]', 'button[aria-label*="Phone"]']);
     const panelText = (document.querySelector('[role="main"]')?.innerText ?? document.body?.innerText ?? '').trim();
-    const cityGuess = address?.split(',').slice(-2, -1)[0]?.trim() || address?.split(',')[0]?.trim() || country;
+    const addressParts = (address ?? '').split(',').map((part) => part.trim()).filter(Boolean);
+    const cityGuess = addressParts.length >= 2 ? addressParts[addressParts.length - 3] || addressParts[0] : addressParts[0] || country;
 
     return {
       name: title,
@@ -321,6 +324,11 @@ const buildLeadFromPlaceDetails = (details, countryName, industry, tierId) => {
   };
 };
 
+const isDirectPlacePage = (page) => {
+  const currentUrl = page.url();
+  return currentUrl.includes('/maps/place/') || currentUrl.includes('google.com/maps/place/');
+};
+
 const collectFromQuery = async (page, query, industry, country, searchLimit, scrollRounds, tierId) => {
   const strategies = [
     { name: "maps-direct-url", open: () => openMapsByDirectUrl(page, query) },
@@ -332,6 +340,25 @@ const collectFromQuery = async (page, query, industry, country, searchLimit, scr
     try {
       await strategy.open();
       await delay(3000);
+
+      if (isDirectPlacePage(page)) {
+        const details = await extractPlaceDetails(page, industry, country.name);
+        const lead = buildLeadFromPlaceDetails(details, country.name, industry, tierId);
+
+        logger.info("lead extraction summary", {
+          query,
+          strategy: strategy.name,
+          articleCardCount: 0,
+          placeAnchorCount: 0,
+          feedCardCount: 0,
+          extractedCount: isIgnoredBusinessName(lead.name) ? 0 : 1,
+          directPlacePage: true
+        });
+
+        if (!isIgnoredBusinessName(lead.name)) {
+          return [lead];
+        }
+      }
 
       for (let index = 0; index < scrollRounds; index += 1) {
         await page.mouse.wheel({ deltaY: 1200 });
