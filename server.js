@@ -14,7 +14,7 @@ import { getCountryTimezone, getRotatedCountry, supportedCountries } from "./con
 import { getOutreachMode } from "./config/outreachModeConfig.js";
 import { getSmtpProviderConfig, getSmtpProviderName, smtpProviders } from "./config/smtpConfig.js";
 import { getTierMetadata, tierDefinitions } from "./config/tierConfig.js";
-import { connectToMongo, countLeads, getEmailStats, getRecentLeads, getRecentLogs, getSentEmails, updateLead } from "./database/mongo.js";
+import { connectToMongo, countLeads, getAllLeads, getEmailStats, getRecentLeads, getRecentLogs, getSentEmails, updateLead } from "./database/mongo.js";
 import { logger } from "./utils/logger.js";
 import { getCampaignState, runCampaignCycle } from "./scheduler/campaignScheduler.js";
 
@@ -79,13 +79,6 @@ const sendJson = (request, response, statusCode, payload) => {
     "Content-Type": "application/json"
   }));
   response.end(JSON.stringify(payload));
-};
-
-const sendText = (request, response, statusCode, contentType, body) => {
-  response.writeHead(statusCode, getResponseHeaders(request, {
-    "Content-Type": contentType
-  }));
-  response.end(body);
 };
 
 const hasAdminAccess = (request) => {
@@ -205,6 +198,32 @@ const buildRecentLeadRow = (lead) => {
     subjectLine: lead.subjectLine ?? null,
     emailBody: lead.emailBody ?? null,
     updatedAt: lead.updatedAt ?? null
+  };
+};
+
+const buildLeadArchiveRow = (lead) => {
+  return {
+    id: lead._id?.toString?.() ?? "",
+    business: lead.name,
+    industry: lead.industry,
+    city: lead.city,
+    country: lead.country,
+    score: lead.score ?? 0,
+    website: lead.website ?? null,
+    hasWebsite: Boolean(lead.hasWebsite),
+    speedScore: lead.speedScore ?? null,
+    slowWebsite: Boolean(lead.slowWebsite),
+    email: lead.email ?? null,
+    status: buildLeadStatus(lead),
+    isTarget: Boolean(lead.isTarget),
+    contacted: Boolean(lead.contacted),
+    followupSent: Boolean(lead.followupSent),
+    homepageLoadTimeMs: lead.homepageLoadTimeMs ?? null,
+    tier: lead.tier ?? null,
+    createdAt: lead.createdAt ?? null,
+    updatedAt: lead.updatedAt ?? null,
+    contactedDate: lead.contactedDate ?? null,
+    nextFollowupAt: lead.nextFollowupAt ?? null
   };
 };
 
@@ -343,6 +362,16 @@ const buildRecentLeadsPayload = async () => {
   };
 };
 
+const buildAllLeadsPayload = async () => {
+  await connectToMongo();
+  const leads = await getAllLeads(2000);
+  return {
+    status: "ok",
+    count: leads.length,
+    leads: leads.map(buildLeadArchiveRow)
+  };
+};
+
 const buildLogsPayload = async () => {
   await connectToMongo();
   const logs = await getRecentLogs(150);
@@ -452,7 +481,7 @@ const runSingleBusinessWorkflow = async ({ businessName, countryName, industry =
 };
 
 const serveStaticFile = async (request, response, pathname) => {
-  const normalizedPath = pathname === "/" ? "/index.html" : pathname === "/login" ? "/login.html" : pathname === "/dashboard" ? "/dashboard.html" : pathname === "/emails" ? "/emails.html" : pathname;
+  const normalizedPath = pathname === "/" ? "/index.html" : pathname === "/login" ? "/login.html" : pathname === "/dashboard" ? "/dashboard.html" : pathname === "/emails" ? "/emails.html" : pathname === "/leads" ? "/leads.html" : pathname;
   const filePath = path.join(publicDir, normalizedPath.replace(/^\/+/, ""));
 
   if (!filePath.startsWith(publicDir)) {
@@ -565,6 +594,15 @@ const requestHandler = async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && requestUrl.pathname === "/api/leads/all") {
+    if (!requireAdminAccess(request, response, "Lead archive requires admin access.")) {
+      return;
+    }
+
+    sendJson(request, response, 200, await buildAllLeadsPayload());
+    return;
+  }
+
   if (request.method === "GET" && requestUrl.pathname === "/api/logs/recent") {
     if (!requireAdminAccess(request, response, "Log data requires admin access.")) {
       return;
@@ -632,6 +670,7 @@ if (process.env.START_MODE === "api" || (process.argv[1] && process.argv[1].ends
 }
 
 export {
+  buildAllLeadsPayload,
   buildDashboardPayload,
   buildLogsPayload,
   buildRecentLeadsPayload,
@@ -641,4 +680,3 @@ export {
   runSingleBusinessWorkflow,
   startServer
 };
-

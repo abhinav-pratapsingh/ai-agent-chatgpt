@@ -166,6 +166,38 @@ const getLeadById = async (id) => {
   return leads.findOne({ _id: id });
 };
 
+const getAllLeads = async (limit = 1000) => {
+  const leads = await getLeadsCollection();
+  return leads.find(
+    {},
+    {
+      projection: {
+        name: 1,
+        industry: 1,
+        city: 1,
+        country: 1,
+        score: 1,
+        hasWebsite: 1,
+        website: 1,
+        speedScore: 1,
+        slowWebsite: 1,
+        homepageLoadTimeMs: 1,
+        email: 1,
+        contacted: 1,
+        contactedDate: 1,
+        followupSent: 1,
+        nextFollowupAt: 1,
+        isTarget: 1,
+        tier: 1,
+        updatedAt: 1,
+        createdAt: 1
+      },
+      sort: { updatedAt: -1, createdAt: -1 },
+      limit
+    }
+  ).toArray();
+};
+
 const getRecentLeads = async (limit = 25) => {
   const leads = await getLeadsCollection();
   return leads.find(
@@ -312,7 +344,6 @@ const writeAppLog = async ({ level, message, meta, processName }) => {
       timestamp: new Date()
     });
   } catch {
-    // Logging must never break the main process.
   }
 };
 
@@ -336,6 +367,7 @@ export {
   countLeads,
   ensureCollections,
   findLeads,
+  getAllLeads,
   getAppLogsCollection,
   getCollection,
   getEmailStats,
