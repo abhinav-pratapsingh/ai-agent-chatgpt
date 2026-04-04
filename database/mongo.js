@@ -99,12 +99,12 @@ const compactLeadFields = (lead) => {
 
 const upsertLead = async (lead) => {
   const leads = await getLeadsCollection();
-  const identityFilter = lead.website
-    ? { website: lead.website }
+  const identityFilter = lead.placeId
+    ? { placeId: lead.placeId }
     : lead.mapsUrl
       ? { mapsUrl: lead.mapsUrl }
-      : lead.placeId
-        ? { placeId: lead.placeId }
+      : lead.website
+        ? { website: lead.website }
         : {
             name: lead.name,
             city: lead.city,
@@ -269,3 +269,4 @@ export {
   updateLead,
   upsertLead
 };
+

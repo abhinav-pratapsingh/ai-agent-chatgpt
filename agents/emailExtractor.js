@@ -56,6 +56,60 @@ const searchForBusinessEmail = async (page, lead) => {
   return null;
 };
 
+const extractEmailForLead = async (lead) => {
+  const browser = await puppeteer.launch({
+    headless: process.env.PUPPETEER_HEADLESS !== "false",
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"]
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(process.env.USER_AGENT ?? "Mozilla/5.0");
+
+    let discoveredEmail = null;
+
+    for (const url of createCandidateUrls(lead.website)) {
+      try {
+        const emails = await extractEmailsFromPage(page, url);
+
+        if (emails.length > 0) {
+          [discoveredEmail] = emails;
+          break;
+        }
+      } catch (error) {
+        logger.debug("email extraction page failed", { url, error: error.message });
+      }
+    }
+
+    if (!discoveredEmail) {
+      discoveredEmail = await searchForBusinessEmail(page, lead);
+    }
+
+    await page.close();
+
+    if (discoveredEmail && lead._id) {
+      await updateLead(
+        { _id: lead._id },
+        {
+          $set: {
+            email: discoveredEmail,
+            updatedAt: new Date()
+          }
+        }
+      );
+    }
+
+    if (discoveredEmail) {
+      logger.info("email extracted", { businessName: lead.name, email: discoveredEmail });
+    }
+
+    return discoveredEmail;
+  } finally {
+    await browser.close();
+  }
+};
+
 const extractEmails = async () => {
   const leads = await findLeads({
     email: { $in: [null, ""] }
@@ -66,54 +120,9 @@ const extractEmails = async () => {
     return;
   }
 
-  const browser = await puppeteer.launch({
-    headless: process.env.PUPPETEER_HEADLESS !== "false",
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"]
-  });
-
-  try {
-    for (const lead of leads) {
-      const page = await browser.newPage();
-      await page.setUserAgent(process.env.USER_AGENT ?? "Mozilla/5.0");
-
-      let discoveredEmail = null;
-
-      for (const url of createCandidateUrls(lead.website)) {
-        try {
-          const emails = await extractEmailsFromPage(page, url);
-
-          if (emails.length > 0) {
-            [discoveredEmail] = emails;
-            break;
-          }
-        } catch (error) {
-          logger.debug("email extraction page failed", { url, error: error.message });
-        }
-      }
-
-      if (!discoveredEmail) {
-        discoveredEmail = await searchForBusinessEmail(page, lead);
-      }
-
-      await page.close();
-
-      if (discoveredEmail) {
-        await updateLead(
-          { _id: lead._id },
-          {
-            $set: {
-              email: discoveredEmail,
-              updatedAt: new Date()
-            }
-          }
-        );
-        logger.info("email extracted", { businessName: lead.name, email: discoveredEmail });
-      }
-    }
-  } finally {
-    await browser.close();
+  for (const lead of leads) {
+    await extractEmailForLead(lead);
   }
 };
 
-export { createCandidateUrls, extractEmails, extractEmailsFromText, searchForBusinessEmail };
+export { createCandidateUrls, extractEmailForLead, extractEmails, extractEmailsFromText, searchForBusinessEmail };

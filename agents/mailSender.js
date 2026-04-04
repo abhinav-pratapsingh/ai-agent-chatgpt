@@ -53,44 +53,37 @@ const buildSenderAddress = () => {
   return `"${process.env.MAIL_FROM_NAME ?? "AI Outreach Agent"}" <${process.env.MAIL_FROM_EMAIL ?? process.env.GMAIL_USER}>`;
 };
 
-const sendOutreachEmails = async () => {
-  const transporter = createTransporter();
+const sendSingleLeadEmail = async (lead, { ignoreBusinessHours = false } = {}) => {
+  const timezone = buildTimezone(lead);
   const providerName = getSmtpProviderName();
-  const { minMs, maxMs } = getSmtpDelayWindow();
-  const leads = await getEligibleLeadBatch();
 
-  logger.info("mode selected", { providerName });
+  if (!ignoreBusinessHours && !isWithinBusinessHours(timezone)) {
+    return { sent: false, reason: "outside_business_hours", timezone };
+  }
 
-  for (const lead of leads) {
-    const timezone = buildTimezone(lead);
+  if (!(await canSendMoreEmails())) {
+    return { sent: false, reason: "provider_limit_reached", timezone };
+  }
 
-    if (!isWithinBusinessHours(timezone)) {
-      logger.info("skipping lead outside send window", { businessName: lead.name, timezone });
-      continue;
-    }
+  const recipient = process.env.TEST_MODE === "true" ? process.env.TEST_RECIPIENT : lead.email;
 
-    if (!(await canSendMoreEmails())) {
-      logger.warn("sending stopped because provider limit reached", { providerName });
-      break;
-    }
+  if (!recipient) {
+    return { sent: false, reason: "recipient_missing", timezone };
+  }
 
-    const subject = getSubjectLine(lead);
-    const emailBody = await generateEmailBody(lead);
-    const recipient = process.env.TEST_MODE === "true" ? process.env.TEST_RECIPIENT : lead.email;
+  const transporter = createTransporter();
+  const subject = getSubjectLine(lead);
+  const emailBody = await generateEmailBody(lead);
 
-    if (!recipient) {
-      logger.warn("skipping lead because recipient missing", { businessName: lead.name });
-      continue;
-    }
+  await transporter.sendMail({
+    from: buildSenderAddress(),
+    to: recipient,
+    replyTo: process.env.REPLY_TO_EMAIL || process.env.MAIL_FROM_EMAIL || process.env.GMAIL_USER,
+    subject,
+    text: emailBody
+  });
 
-    await transporter.sendMail({
-      from: buildSenderAddress(),
-      to: recipient,
-      replyTo: process.env.REPLY_TO_EMAIL || process.env.MAIL_FROM_EMAIL || process.env.GMAIL_USER,
-      subject,
-      text: emailBody
-    });
-
+  if (lead._id) {
     await updateLead(
       { _id: lead._id },
       {
@@ -105,9 +98,37 @@ const sendOutreachEmails = async () => {
         }
       }
     );
+  }
 
-    await incrementEmailStats(providerName);
-    logger.info("email sent", { businessName: lead.name, recipient, providerName, timezone });
+  await incrementEmailStats(providerName);
+  logger.info("email sent", { businessName: lead.name, recipient, providerName, timezone });
+  return { sent: true, recipient, subject, emailBody, timezone };
+};
+
+const sendOutreachEmails = async () => {
+  const providerName = getSmtpProviderName();
+  const { minMs, maxMs } = getSmtpDelayWindow();
+  const leads = await getEligibleLeadBatch();
+
+  logger.info("mode selected", { providerName });
+
+  for (const lead of leads) {
+    const result = await sendSingleLeadEmail(lead);
+
+    if (result.reason === "provider_limit_reached") {
+      logger.warn("sending stopped because provider limit reached", { providerName });
+      break;
+    }
+
+    if (!result.sent) {
+      if (result.reason === "outside_business_hours") {
+        logger.info("skipping lead outside send window", { businessName: lead.name, timezone: result.timezone });
+      } else if (result.reason === "recipient_missing") {
+        logger.warn("skipping lead because recipient missing", { businessName: lead.name });
+      }
+      continue;
+    }
+
     await randomDelay(minMs, maxMs);
   }
 };
@@ -171,4 +192,4 @@ const sendFollowupEmails = async () => {
   }
 };
 
-export { buildSenderAddress, canSendMoreEmails, createTransporter, sendFollowupEmails, sendOutreachEmails };
+export { buildSenderAddress, canSendMoreEmails, createTransporter, sendFollowupEmails, sendOutreachEmails, sendSingleLeadEmail };

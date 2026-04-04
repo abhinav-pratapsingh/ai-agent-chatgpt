@@ -110,6 +110,22 @@ Trigger the full campaign immediately from the same server:
 curl -X POST http://127.0.0.1:6080/api/campaign/run
 ```
 
+Run a single-business workflow test without sending:
+
+```bash
+curl -X POST http://127.0.0.1:6080/api/workflow/test \
+  -H "Content-Type: application/json" \
+  -d "{\"businessName\":\"Australian Dentists Clinic\",\"countryName\":\"Australia\",\"industry\":\"dentists\"}"
+```
+
+Run a single-business workflow test and attempt sending:
+
+```bash
+curl -X POST http://127.0.0.1:6080/api/workflow/test \
+  -H "Content-Type: application/json" \
+  -d "{\"businessName\":\"Australian Dentists Clinic\",\"countryName\":\"Australia\",\"industry\":\"dentists\",\"send\":true}"
+```
+
 Check whether the API is up and whether a campaign is currently running:
 
 ```bash
@@ -176,6 +192,7 @@ Manual trigger with PM2:
 
 ```bash
 curl -X POST http://127.0.0.1:6080/api/campaign/run
+curl -X POST http://127.0.0.1:6080/api/workflow/test -H "Content-Type: application/json" -d "{\"businessName\":\"Australian Dentists Clinic\",\"countryName\":\"Australia\",\"industry\":\"dentists\"}"
 curl http://127.0.0.1:6080/api/campaign/status
 curl http://127.0.0.1:6080/api/emails/sent
 ```

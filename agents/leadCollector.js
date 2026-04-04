@@ -34,6 +34,10 @@ const buildMapsQuery = (industry, countryName) => {
   return `${industry} in ${countryName}`;
 };
 
+const buildBusinessQuery = (businessName, countryName) => {
+  return `${businessName} ${countryName}`.trim();
+};
+
 const normalizeWebsite = (website) => {
   if (!website) {
     return null;
@@ -105,6 +109,20 @@ const acceptConsentIfPresent = async (page) => {
   logger.info("google consent accepted", { matchedText: clicked.text });
   await delay(4000);
   return true;
+};
+
+const getPageDiagnostics = async (page) => {
+  const title = await page.title();
+  const url = page.url();
+  const bodyPreview = await page.evaluate(() => {
+    return (document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 600);
+  });
+
+  return {
+    title,
+    url,
+    bodyPreview
+  };
 };
 
 const ensureUsableGooglePage = async (page, targetUrl) => {
@@ -197,20 +215,6 @@ const extractLeadCandidates = async (page, requestedIndustry, countryMeta, maxIt
   }, requestedIndustry, countryMeta, maxItems);
 };
 
-const getPageDiagnostics = async (page) => {
-  const title = await page.title();
-  const url = page.url();
-  const bodyPreview = await page.evaluate(() => {
-    return (document.body?.innerText ?? "").replace(/\s+/g, " ").trim().slice(0, 600);
-  });
-
-  return {
-    title,
-    url,
-    bodyPreview
-  };
-};
-
 const openMapsByDirectUrl = async (page, query) => {
   const targetUrl = `https://www.google.com/maps/search/${encodeURIComponent(query)}?hl=en&gl=GB`;
   await page.goto(targetUrl, {
@@ -297,15 +301,9 @@ const collectFromQuery = async (page, query, industry, country, searchLimit, scr
   return [];
 };
 
-const collectLeads = async () => {
-  const { tierId, name: tierName, industries } = getTierMetadata();
-  const country = getRotatedCountry();
-  const searchLimit = Number.parseInt(process.env.CAMPAIGN_SEARCH_LIMIT ?? "25", 10);
-  const scrollRounds = Number.parseInt(process.env.GOOGLE_MAPS_SCROLL_ROUNDS ?? "8", 10);
+const collectLeadSet = async ({ queries, country, searchLimit, scrollRounds, tierId }) => {
   const browser = await openBrowser();
-
-  logger.info("tier selected", { tierId, tierName });
-  logger.info("country selected", { country: country.name });
+  const collectedLeads = [];
 
   try {
     const page = await browser.newPage();
@@ -313,11 +311,9 @@ const collectLeads = async () => {
     await page.setViewport({ width: 1440, height: 900 });
     await preloadGoogleContext(page);
 
-    for (const industry of industries) {
-      const query = buildMapsQuery(industry, country.name);
-      logger.info("collecting leads", { query });
-
-      const rawLeads = await collectFromQuery(page, query, industry, country, searchLimit, scrollRounds);
+    for (const queryConfig of queries) {
+      logger.info("collecting leads", { query: queryConfig.query });
+      const rawLeads = await collectFromQuery(page, queryConfig.query, queryConfig.industry, country, queryConfig.maxItems ?? searchLimit, scrollRounds);
 
       for (const rawLead of rawLeads) {
         const city = sanitizeCity(rawLead.city, country.name);
@@ -328,11 +324,12 @@ const collectLeads = async () => {
           city,
           country: country.name,
           timezone: inferTimezone(country.name, city),
-          industry,
+          industry: queryConfig.industry,
           tier: tierId
         };
 
         await upsertLead(lead);
+        collectedLeads.push(lead);
         logger.info("lead collected", {
           businessName: lead.name,
           industry: lead.industry,
@@ -344,6 +341,45 @@ const collectLeads = async () => {
   } finally {
     await browser.close();
   }
+
+  return collectedLeads;
 };
 
-export { buildMapsQuery, collectLeads };
+const collectLeads = async () => {
+  const { tierId, name: tierName, industries } = getTierMetadata();
+  const country = getRotatedCountry();
+  const searchLimit = Number.parseInt(process.env.CAMPAIGN_SEARCH_LIMIT ?? "25", 10);
+  const scrollRounds = Number.parseInt(process.env.GOOGLE_MAPS_SCROLL_ROUNDS ?? "8", 10);
+
+  logger.info("tier selected", { tierId, tierName });
+  logger.info("country selected", { country: country.name });
+
+  await collectLeadSet({
+    queries: industries.map((industry) => ({ query: buildMapsQuery(industry, country.name), industry })),
+    country,
+    searchLimit,
+    scrollRounds,
+    tierId
+  });
+};
+
+const collectSingleBusinessLead = async ({ businessName, countryName, industry = "manual_test", maxItems = 3 }) => {
+  const country = {
+    name: countryName,
+    code: countryName.slice(0, 2).toUpperCase(),
+    timezones: [inferTimezone(countryName, countryName)]
+  };
+
+  const leads = await collectLeadSet({
+    queries: [{ query: buildBusinessQuery(businessName, countryName), industry, maxItems }],
+    country,
+    searchLimit: maxItems,
+    scrollRounds: Number.parseInt(process.env.GOOGLE_MAPS_SCROLL_ROUNDS ?? "8", 10),
+    tierId: 0
+  });
+
+  const normalizedBusinessName = businessName.trim().toLowerCase();
+  return leads.find((lead) => lead.name.toLowerCase().includes(normalizedBusinessName)) ?? leads[0] ?? null;
+};
+
+export { buildBusinessQuery, buildMapsQuery, collectLeads, collectSingleBusinessLead };
