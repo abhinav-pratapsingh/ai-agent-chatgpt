@@ -14,23 +14,71 @@ const createCandidateUrls = (website) => {
   }
 
   const normalizedWebsite = website.endsWith("/") ? website.slice(0, -1) : website;
-  return [normalizedWebsite, `${normalizedWebsite}/contact`, `${normalizedWebsite}/about`, `${normalizedWebsite}/contact-us`];
+  return [
+    normalizedWebsite,
+    `${normalizedWebsite}/contact`,
+    `${normalizedWebsite}/contact-us`,
+    `${normalizedWebsite}/about`,
+    `${normalizedWebsite}/about-us`,
+    `${normalizedWebsite}/locations`,
+    `${normalizedWebsite}/our-team`
+  ];
 };
 
 const extractEmailsFromPage = async (page, url) => {
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
   const text = await page.evaluate(() => {
     const mailtoLinks = Array.from(document.querySelectorAll('a[href^="mailto:"]')).map((link) => link.getAttribute("href")?.replace(/^mailto:/i, "") ?? "");
-    return `${document.body?.innerText ?? ""}\n${mailtoLinks.join("\n")}`;
+    const linkTexts = Array.from(document.querySelectorAll("a"))
+      .map((link) => `${link.textContent ?? ""}\n${link.getAttribute("href") ?? ""}`)
+      .join("\n");
+    return `${document.body?.innerText ?? ""}\n${linkTexts}\n${mailtoLinks.join("\n")}`;
   });
   return extractEmailsFromText(text);
 };
 
+const extractCandidateLinks = async (page, baseUrl) => {
+  return page.evaluate((origin) => {
+    const keywords = ["contact", "about", "team", "location", "clinic", "book", "appointment"];
+    const links = Array.from(document.querySelectorAll("a[href]"))
+      .map((link) => link.getAttribute("href") ?? "")
+      .filter(Boolean)
+      .map((href) => {
+        try {
+          return new URL(href, origin).toString();
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .filter((href) => href.startsWith(origin))
+      .filter((href) => keywords.some((keyword) => href.toLowerCase().includes(keyword)));
+
+    return Array.from(new Set(links)).slice(0, 8);
+  }, new URL(baseUrl).origin);
+};
+
+const pickBestEmail = (emails, website) => {
+  if (emails.length === 0) {
+    return null;
+  }
+
+  const hostname = website ? new URL(website).hostname.replace(/^www\./i, "").toLowerCase() : "";
+  const rankedEmails = [...emails].sort((left, right) => {
+    const leftScore = Number(left.endsWith(`@${hostname}`)) * 10 + Number(!/info|hello|admin|office/i.test(left));
+    const rightScore = Number(right.endsWith(`@${hostname}`)) * 10 + Number(!/info|hello|admin|office/i.test(right));
+    return rightScore - leftScore;
+  });
+
+  return rankedEmails[0];
+};
+
 const buildSearchQueries = (lead) => {
   return [
-    `site:facebook.com \"${lead.name}\" \"${lead.city}\" email`,
-    `\"${lead.name}\" \"${lead.city}\" \"${lead.country}\" email`,
-    `\"${lead.name}\" contact email \"${lead.city}\"`
+    `site:${new URL(lead.website ?? "https://example.com").hostname.replace(/^www\./i, "")} email`,
+    `"${lead.name}" "${lead.city}" "${lead.country}" email`,
+    `"${lead.name}" contact email "${lead.city}"`,
+    `site:facebook.com "${lead.name}" "${lead.city}" email`
   ];
 };
 
@@ -46,7 +94,7 @@ const searchForBusinessEmail = async (page, lead) => {
       const emails = extractEmailsFromText(text).filter((email) => !email.endsWith("@example.com"));
 
       if (emails.length > 0) {
-        return emails[0];
+        return pickBestEmail(emails, lead.website);
       }
     } catch (error) {
       logger.debug("search-based email extraction failed", { businessName: lead.name, query, error: error.message });
@@ -68,13 +116,40 @@ const extractEmailForLead = async (lead) => {
     await page.setUserAgent(process.env.USER_AGENT ?? "Mozilla/5.0");
 
     let discoveredEmail = null;
+    const visitedUrls = new Set();
 
     for (const url of createCandidateUrls(lead.website)) {
+      if (visitedUrls.has(url)) {
+        continue;
+      }
+
+      visitedUrls.add(url);
+
       try {
         const emails = await extractEmailsFromPage(page, url);
 
         if (emails.length > 0) {
-          [discoveredEmail] = emails;
+          discoveredEmail = pickBestEmail(emails, lead.website);
+          break;
+        }
+
+        const nestedCandidateUrls = await extractCandidateLinks(page, url);
+
+        for (const nestedUrl of nestedCandidateUrls) {
+          if (visitedUrls.has(nestedUrl)) {
+            continue;
+          }
+
+          visitedUrls.add(nestedUrl);
+          const nestedEmails = await extractEmailsFromPage(page, nestedUrl).catch(() => []);
+
+          if (nestedEmails.length > 0) {
+            discoveredEmail = pickBestEmail(nestedEmails, lead.website);
+            break;
+          }
+        }
+
+        if (discoveredEmail) {
           break;
         }
       } catch (error) {

@@ -1,4 +1,4 @@
-﻿import puppeteer from "puppeteer";
+import puppeteer from "puppeteer";
 import { inferTimezone, getRotatedCountry } from "../config/countryConfig.js";
 import { getTierMetadata } from "../config/tierConfig.js";
 import { upsertLead } from "../database/mongo.js";
@@ -62,13 +62,20 @@ const normalizeWebsite = (website) => {
   return website.replace(/\/$/, "");
 };
 
-const sanitizeCity = (city, countryName) => {
-  const normalizedCity = String(city ?? "").replace(/\s+/g, " ").trim();
-  return normalizedCity || countryName;
-};
-
 const normalizeText = (value) => {
   return String(value ?? "").replace(/\s+/g, " ").trim();
+};
+
+const sanitizeCity = (city, countryName) => {
+  const normalizedCity = normalizeText(city)
+    .replace(/^[^A-Za-z]+/, "")
+    .replace(/^(Level|Shop|Suite|Unit|Floor)\b.*?,\s*/i, "")
+    .replace(/^(\d+[A-Za-z-]*\/?\d*\s+[^,]+,\s*)+/i, "")
+    .replace(/^(Floor\s*\d+\s*[\-|,]?\s*)/i, "")
+    .replace(/^(?:Level|Shop|Suite|Unit|Floor)\s*\d+\b.*$/i, "")
+    .trim();
+
+  return normalizedCity || countryName;
 };
 
 const isIgnoredBusinessName = (value) => {
@@ -214,9 +221,7 @@ const openGoogleLocalResults = async (page, query) => {
 
 const extractResultHandles = async (page) => {
   await page.waitForSelector('div[role="article"], a[href*="/maps/place/"]', { timeout: 30000 }).catch(() => {});
-
-  const handles = await page.$$eval('div[role="article"]', (cards) => cards.map((_card, index) => index));
-  return handles;
+  return page.$$eval('div[role="article"]', (cards) => cards.map((_card, index) => index));
 };
 
 const extractCardSummaryAtIndex = async (page, index) => {
@@ -261,6 +266,48 @@ const openPlaceDetailsFromCard = async (page, index) => {
   return true;
 };
 
+const extractCityFromAddress = (address, country) => {
+  const addressParts = String(address ?? "").split(',').map((part) => part.trim()).filter(Boolean);
+  const statePattern = /\b(?:NSW|VIC|QLD|WA|SA|TAS|ACT|NT|England|Scotland|Wales|Victoria|Queensland|Ontario|British Columbia|California|Texas|New York)\b/i;
+
+  for (let index = addressParts.length - 1; index >= 0; index -= 1) {
+    const part = addressParts[index];
+
+    if (!part || part.toLowerCase() === country.toLowerCase()) {
+      continue;
+    }
+
+    if (/^\d+[A-Za-z-]*\/?\d*\s+/.test(part) || /^level\b/i.test(part)) {
+      continue;
+    }
+
+    if (statePattern.test(part)) {
+      const cityMatch = part.match(/^([A-Za-z][A-Za-z\s.'-]+?)\s+(?:NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\s+\d{4}$/i);
+
+      if (cityMatch?.[1]) {
+        return cityMatch[1].trim();
+      }
+
+      continue;
+    }
+
+    if (/[A-Za-z]/.test(part)) {
+      const normalizedPart = part.replace(/\b\d{4,}\b/g, "").trim();
+
+      if (normalizedPart) {
+        return normalizedPart;
+      }
+    }
+  }
+
+  const stateCityMatch = String(address ?? "").match(/\b([A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*)*)\s+(?:VIC|NSW|QLD|WA|SA|TAS|ACT|NT)\s+\d{4}\b/);
+  if (stateCityMatch?.[1]) {
+    return stateCityMatch[1].trim();
+  }
+
+  return country;
+};
+
 const extractPlaceDetails = async (page, fallbackIndustry, countryName) => {
   return page.evaluate((industry, country) => {
     const getText = (selectors) => {
@@ -291,12 +338,10 @@ const extractPlaceDetails = async (page, fallbackIndustry, countryName) => {
     const website = getHref(['a[data-item-id="authority"]', 'a[aria-label*="Website"]', 'a[data-tooltip*="website"]']);
     const phone = getText(['button[data-item-id^="phone"]', 'button[aria-label*="Phone"]']);
     const panelText = (document.querySelector('[role="main"]')?.innerText ?? document.body?.innerText ?? '').trim();
-    const addressParts = (address ?? '').split(',').map((part) => part.trim()).filter(Boolean);
-    const cityGuess = addressParts.length >= 2 ? addressParts[addressParts.length - 3] || addressParts[0] : addressParts[0] || country;
 
     return {
       name: title,
-      city: cityGuess,
+      address,
       country,
       industry: category || industry,
       website,
@@ -306,7 +351,12 @@ const extractPlaceDetails = async (page, fallbackIndustry, countryName) => {
       mapsUrl: window.location.href,
       placeId: window.location.href.split('?')[0]
     };
-  }, fallbackIndustry, countryName);
+  }, fallbackIndustry, countryName).then((details) => {
+    return {
+      ...details,
+      city: extractCityFromAddress(details.address, countryName)
+    };
+  });
 };
 
 const buildLeadFromPlaceDetails = (details, countryName, industry, tierId) => {
@@ -317,6 +367,7 @@ const buildLeadFromPlaceDetails = (details, countryName, industry, tierId) => {
     website: normalizeWebsite(details.website),
     hasWebsite: Boolean(details.website),
     city,
+    address: normalizeText(details.address),
     country: countryName,
     timezone: inferTimezone(countryName, city),
     industry: details.industry || industry,
